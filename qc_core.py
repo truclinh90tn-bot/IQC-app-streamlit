@@ -8,6 +8,178 @@ import numpy as np
 import pandas as pd
 
 import streamlit as st
+
+# Optional dependencies (chỉ cần khi bật Supabase)
+try:
+    from supabase import create_client  # type: ignore
+except Exception:  # pragma: no cover
+    create_client = None
+
+try:
+    from passlib.hash import bcrypt  # type: ignore
+except Exception:  # pragma: no cover
+    bcrypt = None
+
+
+def supabase_is_configured() -> bool:
+    """True khi secrets có đủ SUPABASE_URL + SUPABASE_SERVICE_KEY/ANON_KEY."""
+    try:
+        sb = st.secrets.get("supabase", {})
+        url = sb.get("url")
+        key = sb.get("service_key") or sb.get("anon_key")
+        return bool(url and key and create_client is not None)
+    except Exception:
+        return False
+
+
+@st.cache_resource
+def _get_supabase_client():
+    sb = st.secrets.get("supabase", {})
+    url = sb.get("url")
+    key = sb.get("service_key") or sb.get("anon_key")
+    if not url or not key:
+        raise RuntimeError("Missing Supabase secrets: supabase.url and supabase.service_key/anon_key")
+    if create_client is None:
+        raise RuntimeError("Missing dependency: supabase (pip install supabase)")
+    return create_client(url, key)
+
+
+def _df_to_records(df: pd.DataFrame) -> list:
+    if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+        return []
+    _df = df.copy()
+    # Chuyển Timestamp -> ISO string
+    for c in _df.columns:
+        if np.issubdtype(_df[c].dtype, np.datetime64):
+            _df[c] = _df[c].astype("datetime64[ns]").dt.strftime("%Y-%m-%d")
+    return _df.to_dict(orient="records")
+
+
+def _records_to_df(records) -> pd.DataFrame:
+    if not records:
+        return pd.DataFrame()
+    return pd.DataFrame(records)
+
+
+def db_load_state(lab_id: str, analyte_key: str) -> dict | None:
+    """Load toàn bộ state của 1 xét nghiệm (analyte_key) theo lab_id."""
+    if not supabase_is_configured():
+        return None
+    try:
+        client = _get_supabase_client()
+        resp = (
+            client.table("iqc_state")
+            .select("state")
+            .eq("lab_id", lab_id)
+            .eq("analyte_key", analyte_key)
+            .limit(1)
+            .execute()
+        )
+        data = getattr(resp, "data", None) or []
+        if not data:
+            return None
+        state = data[0].get("state")
+        if not isinstance(state, dict):
+            return None
+        # Restore DataFrames
+        for k in ["qc_stats", "daily_df", "summary_df", "chart_df"]:
+            if k in state and isinstance(state[k], list):
+                state[k] = _records_to_df(state[k])
+        return state
+    except Exception:
+        return None
+
+
+def db_save_state(lab_id: str, analyte_key: str, state: dict) -> bool:
+    """Upsert state về Supabase. Chỉ lưu các thành phần cần thiết."""
+    if not supabase_is_configured():
+        return False
+    try:
+        client = _get_supabase_client()
+        payload = dict(state)
+        # Serialize DataFrames
+        for k in ["qc_stats", "daily_df", "summary_df", "chart_df"]:
+            if k in payload and isinstance(payload[k], pd.DataFrame):
+                payload[k] = _df_to_records(payload[k])
+        client.table("iqc_state").upsert(
+            {"lab_id": lab_id, "analyte_key": analyte_key, "state": payload},
+            on_conflict="lab_id,analyte_key",
+        ).execute()
+        return True
+    except Exception:
+        return False
+
+
+def auth_logout():
+    for k in ["auth_user", "auth_role", "auth_lab_id", "is_logged_in"]:
+        st.session_state.pop(k, None)
+    _rerun()
+
+
+def require_login():
+    """Chặn toàn app nếu chưa đăng nhập.
+
+    - Nếu chưa cấu hình Supabase secrets: chỉ hiện hướng dẫn.
+    - Nếu đã có: form đăng nhập username/password.
+    """
+    if st.session_state.get("is_logged_in"):
+        return
+
+    st.markdown("## 🔐 Đăng nhập IQC")
+    if not supabase_is_configured():
+        st.warning(
+            "Chưa cấu hình Supabase để lưu dữ liệu theo PXN.\n\n"
+            "Chị vào **Streamlit → Settings → Secrets** và thêm: \n"
+            "- `supabase.url`\n- `supabase.service_key` (hoặc `supabase.anon_key`)\n\n"
+            "Sau đó **Save** và **Rerun** lại app."
+        )
+        st.stop()
+
+    with st.form("login_form", clear_on_submit=False):
+        username = st.text_input("Username", placeholder="vd: pxn001")
+        password = st.text_input("Password", type="password")
+        submitted = st.form_submit_button("Đăng nhập")
+
+    if not submitted:
+        st.stop()
+
+    if not username or not password:
+        st.error("Chị nhập đủ username và password giúp em.")
+        st.stop()
+
+    if bcrypt is None:
+        st.error("Thiếu thư viện passlib. Chị kiểm tra requirements.txt đã có passlib[bcrypt] chưa.")
+        st.stop()
+
+    try:
+        client = _get_supabase_client()
+        resp = (
+            client.table("accounts")
+            .select("username,password_hash,role,lab_id")
+            .eq("username", username)
+            .limit(1)
+            .execute()
+        )
+        rows = getattr(resp, "data", None) or []
+        if not rows:
+            st.error("Sai username hoặc password.")
+            st.stop()
+        row = rows[0]
+        ph = row.get("password_hash")
+        if not ph or not bcrypt.verify(password, ph):
+            st.error("Sai username hoặc password.")
+            st.stop()
+
+        st.session_state["is_logged_in"] = True
+        st.session_state["auth_user"] = row.get("username")
+        st.session_state["auth_role"] = row.get("role")
+        st.session_state["auth_lab_id"] = row.get("lab_id")
+        _rerun()
+    except Exception as e:
+        st.error(f"Đăng nhập lỗi: {e}")
+        st.stop()
+
+
 def _rerun():
     """Tương thích nhiều phiên bản Streamlit."""
     if hasattr(st, "rerun"):
@@ -416,6 +588,7 @@ def _init_multi_analyte_store():
     active = st.session_state["active_analyte"]
 
     if active not in store:
+        # Default in-memory state
         store[active] = {
             "config": {
                 "test_name": active,
@@ -436,6 +609,17 @@ def _init_multi_analyte_store():
             "point_df": None,
             "export_df": None,
         }
+
+        # (NEW) Nếu đã đăng nhập + có Supabase secrets -> load state đã lưu
+        try:
+            user = st.session_state.get("current_user")
+            if user and user.get("lab_id") and supabase_is_configured():
+                loaded = db_load_state(user["lab_id"], active)
+                if loaded:
+                    store[active] = loaded
+        except Exception:
+            # Không làm app crash nếu DB lỗi
+            pass
     st.session_state["iqc_multi"] = store
     return store, active
 
@@ -453,6 +637,14 @@ def update_current_analyte_state(**kwargs):
     cur.update(kwargs)
     store[active] = cur
     st.session_state["iqc_multi"] = store
+
+    # (NEW) autosave DB (nếu đã login)
+    try:
+        user = st.session_state.get("current_user")
+        if user and user.get("lab_id") and supabase_is_configured():
+            db_save_state(user["lab_id"], active, cur)
+    except Exception:
+        pass
 
 
 # =====================================================

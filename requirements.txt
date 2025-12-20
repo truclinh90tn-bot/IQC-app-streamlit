@@ -5,3 +5,5 @@ altair
 openpyxl
 matplotlib
 python-docx
+supabase
+passlib[bcrypt]

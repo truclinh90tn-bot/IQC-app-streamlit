@@ -10,6 +10,10 @@ from export.word_reports import ReportMeta
 
 qc.apply_page_config()
 qc.inject_global_css()
+
+# (NEW) login + lưu dữ liệu theo PXN
+qc.require_login()
+
 cfg = qc.render_sidebar()
 
 sigma_cat, active_rules = qc.get_sigma_category_and_rules(
