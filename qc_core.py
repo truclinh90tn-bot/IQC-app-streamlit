@@ -117,67 +117,63 @@ def auth_logout():
 
 
 def require_login():
-    """Chặn toàn app nếu chưa đăng nhập.
+    import streamlit as st
 
-    - Nếu chưa cấu hình Supabase secrets: chỉ hiện hướng dẫn.
-    - Nếu đã có: form đăng nhập username/password.
-    """
-    if st.session_state.get("is_logged_in"):
+    # --- đọc secrets ---
+    sb = st.secrets.get("supabase", {})
+    sb_url = sb.get("url", "")
+    sb_key = sb.get("service_key", "") or sb.get("anon_key", "")
+
+    if not sb_url or not sb_key:
+        st.error("Chưa cấu hình Supabase. Vào Streamlit → Settings → Secrets và thêm supabase.url + supabase.service_key (hoặc supabase.anon_key).")
+        st.stop()
+
+    # --- init supabase client ---
+    try:
+        from supabase import create_client
+        supabase = create_client(sb_url, sb_key)
+    except Exception as e:
+        st.error(f"Lỗi khởi tạo Supabase client: {e}")
+        st.stop()
+
+    # --- nếu đã login thì khỏi hỏi lại ---
+    if st.session_state.get("auth_ok"):
         return
 
-    st.markdown("## 🔐 Đăng nhập IQC")
-    if not supabase_is_configured():
-        st.warning(
-            "Chưa cấu hình Supabase để lưu dữ liệu theo PXN.\n\n"
-            "Chị vào **Streamlit → Settings → Secrets** và thêm: \n"
-            "- `supabase.url`\n- `supabase.service_key` (hoặc `supabase.anon_key`)\n\n"
-            "Sau đó **Save** và **Rerun** lại app."
-        )
+    st.title("🔐 Đăng nhập IQC")
+
+    username = st.text_input("Username")
+    password = st.text_input("Password", type="password")
+
+    col1, col2 = st.columns([1, 3])
+    with col1:
+        do_login = st.button("Đăng nhập", use_container_width=True)
+
+    if do_login:
+        try:
+            # gọi hàm SQL: check_login(p_username, p_password)
+            res = supabase.rpc(
+                "check_login",
+                {"p_username": username.strip(), "p_password": password},
+            ).execute()
+
+            if res.data and len(res.data) > 0:
+                user = res.data[0]
+                st.session_state["auth_ok"] = True
+                st.session_state["username"] = user.get("username")
+                st.session_state["role"] = user.get("role")
+                st.session_state["lab_id"] = user.get("lab_id")
+                st.success(f"✅ Đăng nhập OK: {st.session_state['username']} | {st.session_state['lab_id']}")
+                st.rerun()
+            else:
+                st.error("❌ Sai username hoặc password.")
+        except Exception as e:
+            st.error(f"❌ Lỗi đăng nhập: {e}")
+
+    # chưa login thì chặn app
+    if not st.session_state.get("auth_ok"):
         st.stop()
 
-    with st.form("login_form", clear_on_submit=False):
-        username = st.text_input("Username", placeholder="vd: pxn001")
-        password = st.text_input("Password", type="password")
-        submitted = st.form_submit_button("Đăng nhập")
-
-    if not submitted:
-        st.stop()
-
-    if not username or not password:
-        st.error("Chị nhập đủ username và password giúp em.")
-        st.stop()
-
-    if bcrypt is None:
-        st.error("Thiếu thư viện passlib. Chị kiểm tra requirements.txt đã có passlib[bcrypt] chưa.")
-        st.stop()
-
-    try:
-        client = _get_supabase_client()
-        resp = (
-            client.table("accounts")
-            .select("username,password_hash,role,lab_id")
-            .eq("username", username)
-            .limit(1)
-            .execute()
-        )
-        rows = getattr(resp, "data", None) or []
-        if not rows:
-            st.error("Sai username hoặc password.")
-            st.stop()
-        row = rows[0]
-        ph = row.get("password_hash")
-        if not ph or not bcrypt.verify(password, ph):
-            st.error("Sai username hoặc password.")
-            st.stop()
-
-        st.session_state["is_logged_in"] = True
-        st.session_state["auth_user"] = row.get("username")
-        st.session_state["auth_role"] = row.get("role")
-        st.session_state["auth_lab_id"] = row.get("lab_id")
-        _rerun()
-    except Exception as e:
-        st.error(f"Đăng nhập lỗi: {e}")
-        st.stop()
 
 
 def _rerun():
