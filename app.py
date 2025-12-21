@@ -24,7 +24,7 @@ with st.sidebar:
     lab_id = st.session_state.get("auth_lab_id", "")
     st.caption(f"**User:** `{user}`")  
 **Role:** `{role}`  
-**PXN:** `{lab_id}`")
+**PXN:** `{lab_id}`"
     if st.button("🚪 Đăng xuất", use_container_width=True):
         qc.auth_logout()
 
