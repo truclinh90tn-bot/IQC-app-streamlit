@@ -16,8 +16,6 @@ qc.render_global_header()
 qc.render_topbar_user_logout()    # nút đăng xuất (em làm ở bước 3)
 cfg = qc.render_sidebar()
 
-# ... phần dashboard như cũ
-
 
 
 st.markdown("### ⚡ Quick actions")
