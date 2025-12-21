@@ -1,22 +1,43 @@
 import streamlit as st
 import pandas as pd
+
 import qc_core as qc
 
+# =========================
+# APP BOOTSTRAP
+# =========================
 qc.apply_page_config()
 qc.inject_global_css()
 
-# 1) Nếu chưa login -> render landing (hero + login) và STOP
+# Hero banner luôn hiển thị
+qc.render_global_header()
+
+# =========================
+# LOGIN GATE (hiển thị ngay dưới hero)
+# =========================
 if not qc.is_logged_in():
-    qc.render_global_header()     # giữ hero banner
-    qc.render_login_section()     # card login nằm dưới hero
+    qc.render_login_section(
+        title="🔐 Đăng nhập IQC",
+        subtitle="Nhập tài khoản PXN được cấp để truy cập dữ liệu riêng theo PXN.",
+    )
     st.stop()
 
-# 2) Nếu đã login -> hiện app bình thường
-qc.render_global_header()
-qc.render_topbar_user_logout()    # nút đăng xuất (em làm ở bước 3)
+# Sidebar: hiển thị user + nút Đăng xuất
+qc.render_topbar_user_logout()
+
+# =========================
+# CONFIG / SIDEBAR
+# =========================
 cfg = qc.render_sidebar()
 
+sigma_cat, active_rules = qc.get_sigma_category_and_rules(
+    cfg["sigma_value"], cfg["num_levels"]
+)
 
+# =========================
+# MAIN UI
+# =========================
+qc.render_top_info_cards(cfg, sigma_cat, active_rules)
 
 st.markdown("### ⚡ Quick actions")
 
@@ -57,11 +78,8 @@ with col1:
     daily_df = cur_state.get("daily_df")
     if isinstance(daily_df, pd.DataFrame) and not daily_df.empty:
         total_rows = len(daily_df)
-        filled_rows = (
-            daily_df[[c for c in daily_df.columns if c.startswith("Ctrl")]]
-            .dropna(how="all")
-            .shape[0]
-        )
+        ctrl_cols = [c for c in daily_df.columns if str(c).startswith("Ctrl")]
+        filled_rows = daily_df[ctrl_cols].dropna(how="all").shape[0] if ctrl_cols else 0
         st.metric("Số dòng đã nhập", f"{filled_rows}/{total_rows}")
     else:
         st.info(
@@ -89,13 +107,3 @@ with col2:
             "Chưa có đánh giá Westgard cho xét nghiệm này. "
             "Vào trang **2_Ghi_nhan_va_danh_gia** để tính."
         )
-
-    st.markdown("#### 🧭 Gợi ý thao tác tiếp theo")
-    st.markdown(
-        """
-        - Nếu **chưa có Mean, SD, CV%** → vào trang **1 – Thiết lập chỉ số thống kê**.  
-        - Nếu đã có Mean & SD → vào trang **2 – Ghi nhận & đánh giá** để nhập IQC hằng ngày.  
-        - Muốn xem biểu đồ trực quan → trang **3 – Biểu đồ Levey–Jennings**.  
-        - Xem hướng dẫn chi tiết → trang **4 – Hướng dẫn & About**.
-        """
-    )
