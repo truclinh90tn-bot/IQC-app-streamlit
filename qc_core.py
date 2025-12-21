@@ -51,6 +51,61 @@ def _img_to_base64(path: str) -> str:
 # PAGE CONFIG & THEME
 # =====================================================
 
+
+# =========================
+# Auth wrappers + UI (login/logout)
+# =========================
+# Keep a reference to the original functions imported from auth
+_auth_is_logged_in = is_logged_in
+_auth_require_login = require_login
+
+def is_logged_in() -> bool:
+    """Return True if user already authenticated."""
+    try:
+        return bool(_auth_is_logged_in())
+    except Exception:
+        return False
+
+def require_login() -> None:
+    """Render a centered login UI if not logged in (keeps width gọn), then stop."""
+    if not auth_is_configured():
+        st.error("Chưa cấu hình Supabase/Secrets. Vui lòng cấu hình **Streamlit → Settings → Secrets** rồi **Rerun**.")
+        st.stop()
+
+    if is_logged_in():
+        return
+
+    # Center the login card to ~1/3 page width
+    left, mid, right = st.columns([1, 1, 1])
+    with mid:
+        auth_login_ui()
+    st.stop()
+
+def render_user_bar(show_lab: bool = True) -> None:
+    """Show current user + lab + logout button (usually placed right under hero)."""
+    ctx = {}
+    try:
+        ctx = get_user_context() or {}
+    except Exception:
+        ctx = {}
+
+    user = ctx.get("username") or ""
+    lab_id = ctx.get("lab_id") or ""
+
+    c1, c2, c3 = st.columns([6, 3, 2])
+    with c2:
+        if user:
+            if show_lab and lab_id:
+                st.caption(f"**User:** `{user}`  •  **PXN:** `{lab_id}`")
+            else:
+                st.caption(f"**User:** `{user}`")
+    with c3:
+        if st.button("🚪 Đăng xuất", use_container_width=True):
+            try:
+                auth_logout()
+            finally:
+                st.rerun()
+
 def apply_page_config():
     st.set_page_config(
         page_title="IQC Dashboard",
