@@ -19,17 +19,24 @@ qc.require_login()
 # -----------------------------
 with st.sidebar:
     st.markdown("### 👤 Tài khoản")
+
     user = st.session_state.get("auth_user", "")
     role = st.session_state.get("auth_role", "")
     lab_id = st.session_state.get("auth_lab_id", "")
-    st.caption(f"**User:** `{user}`")  
-**Role:** `{role}`  
-st.caption(f"**PXN:** `{lab_id}`")
 
-if st.button("🚪 Đăng xuất", use_container_width=True):
-    qc.auth_logout()
+    # Hiển thị thông tin tài khoản gọn + không lỗi cú pháp
+    st.markdown(
+        f"""
+        **User:** `{user}`  
+        **Role:** `{role}`  
+        **PXN:** `{lab_id}`
+        """.strip()
+    )
 
+    if st.button("🚪 Đăng xuất", use_container_width=True):
+        qc.auth_logout()
 
+# Render sidebar cấu hình (form thiết lập)
 cfg = qc.render_sidebar()
 
 # Sigma rules
@@ -53,6 +60,7 @@ tab_dash, tab_setup, tab_help = st.tabs(
 with tab_dash:
     st.markdown("### ⚡ Quick actions")
     qa_col1, qa_col2, qa_col3, qa_col4 = st.columns(4)
+
     with qa_col1:
         st.page_link(
             "pages/1_Thiet_lap_chi_so_thong_ke.py",
@@ -86,6 +94,7 @@ with tab_dash:
     with col1:
         st.markdown("#### 📈 Tiến độ nhập dữ liệu IQC")
         daily_df = cur_state.get("daily_df")
+
         if isinstance(daily_df, pd.DataFrame) and not daily_df.empty:
             total_rows = len(daily_df)
             filled_rows = (
@@ -102,6 +111,7 @@ with tab_dash:
 
         st.markdown("#### 🧮 Tóm tắt chỉ số thống kê")
         stats_df = cur_state.get("qc_stats")
+
         if isinstance(stats_df, pd.DataFrame) and not stats_df.empty:
             st.dataframe(stats_df, use_container_width=True, height=230)
         else:
@@ -113,6 +123,7 @@ with tab_dash:
     with col2:
         st.markdown("#### 🧷 Tình trạng QC gần đây")
         summary_df = cur_state.get("summary_df")
+
         if isinstance(summary_df, pd.DataFrame) and not summary_df.empty:
             st.dataframe(summary_df.tail(10), use_container_width=True, height=260)
         else:
@@ -123,8 +134,11 @@ with tab_dash:
 
 with tab_setup:
     st.markdown("### ⚙️ Thiết lập (xem nhanh)")
-    st.caption("Các thiết lập chi tiết đang nằm ở **Sidebar** (bên trái). Dưới đây là tóm tắt cấu hình hiện tại.")
-    # Hiển thị tóm tắt cấu hình
+    st.caption(
+        "Các thiết lập chi tiết đang nằm ở **Sidebar** (bên trái). "
+        "Dưới đây là tóm tắt cấu hình hiện tại."
+    )
+
     show_keys = [
         ("Đơn vị", "don_vi"),
         ("Xét nghiệm", "test_name"),
@@ -136,23 +150,21 @@ with tab_setup:
         ("QC lot", "qc_lot"),
         ("HSD QC", "qc_expiry"),
     ]
-    rows = []
-    for label, key in show_keys:
-        rows.append({"Mục": label, "Giá trị": cfg.get(key, "")})
+
+    rows = [{"Mục": label, "Giá trị": cfg.get(key, "")} for label, key in show_keys]
     st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
     st.info(
-        "Muốn chuyển toàn bộ form thiết lập ra tab này (không dùng sidebar) thì em sẽ tách lại hàm `render_sidebar()` "
-        "thành `render_setup_tab()` để giao diện gọn và chuyên nghiệp hơn."
+        "Muốn chuyển toàn bộ form thiết lập ra tab này (không dùng sidebar) thì em sẽ tách lại "
+        "hàm `render_sidebar()` thành `render_setup_tab()` để giao diện gọn và chuyên nghiệp hơn."
     )
 
 with tab_help:
     st.markdown("### 📘 Hướng dẫn nhanh")
     st.markdown(
-        "- **Dashboard**: xem tổng quan + đi nhanh sang các trang.
-"
-        "- **Thiết lập**: xem tóm tắt cấu hình (chỉnh trong sidebar).
-"
-        "- **Đăng xuất**: nút ở sidebar.
-"
+        """
+        - **Dashboard**: xem tổng quan + đi nhanh sang các trang.
+        - **Thiết lập**: xem tóm tắt cấu hình (chỉnh trong sidebar).
+        - **Đăng xuất**: nút ở sidebar.
+        """.strip()
     )
