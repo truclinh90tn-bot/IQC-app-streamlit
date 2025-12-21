@@ -118,25 +118,11 @@ def auth_logout():
 
 def require_login():
     import streamlit as st
+    from supabase import create_client
 
-    # --- đọc secrets ---
-    sb = st.secrets.get("supabase", {})
-    sb_url = sb.get("url", "")
-    sb_key = sb.get("service_key", "") or sb.get("anon_key", "")
+    sb = st.secrets["supabase"]
+    supabase = create_client(sb["url"], sb["anon_key"])
 
-    if not sb_url or not sb_key:
-        st.error("Chưa cấu hình Supabase. Vào Streamlit → Settings → Secrets và thêm supabase.url + supabase.service_key (hoặc supabase.anon_key).")
-        st.stop()
-
-    # --- init supabase client ---
-    try:
-        from supabase import create_client
-        supabase = create_client(sb_url, sb_key)
-    except Exception as e:
-        st.error(f"Lỗi khởi tạo Supabase client: {e}")
-        st.stop()
-
-    # --- nếu đã login thì khỏi hỏi lại ---
     if st.session_state.get("auth_ok"):
         return
 
@@ -145,34 +131,36 @@ def require_login():
     username = st.text_input("Username")
     password = st.text_input("Password", type="password")
 
-    col1, col2 = st.columns([1, 3])
-    with col1:
-        do_login = st.button("Đăng nhập", use_container_width=True)
+    if st.button("Đăng nhập"):
+        email = f"{username}@iqc.local"
 
-    if do_login:
-        try:
-            # gọi hàm SQL: check_login(p_username, p_password)
-            res = supabase.rpc(
-                "check_login",
-                {"p_username": username.strip(), "p_password": password},
-            ).execute()
+        res = supabase.auth.sign_in_with_password({
+            "email": email,
+            "password": password
+        })
 
-            if res.data and len(res.data) > 0:
-                user = res.data[0]
-                st.session_state["auth_ok"] = True
-                st.session_state["username"] = user.get("username")
-                st.session_state["role"] = user.get("role")
-                st.session_state["lab_id"] = user.get("lab_id")
-                st.success(f"✅ Đăng nhập OK: {st.session_state['username']} | {st.session_state['lab_id']}")
-                st.rerun()
-            else:
-                st.error("❌ Sai username hoặc password.")
-        except Exception as e:
-            st.error(f"❌ Lỗi đăng nhập: {e}")
+        if res.user:
+            # lấy profile để biết lab_id
+            prof = (
+                supabase.table("profiles")
+                .select("username, role, lab_id")
+                .eq("user_id", res.user.id)
+                .single()
+                .execute()
+            )
 
-    # chưa login thì chặn app
-    if not st.session_state.get("auth_ok"):
-        st.stop()
+            st.session_state["auth_ok"] = True
+            st.session_state["username"] = prof.data["username"]
+            st.session_state["role"] = prof.data["role"]
+            st.session_state["lab_id"] = prof.data["lab_id"]
+
+            st.success(f"Đăng nhập PXN {st.session_state['lab_id']} thành công")
+            st.rerun()
+        else:
+            st.error("Sai username hoặc password")
+
+    st.stop()
+
 
 
 
