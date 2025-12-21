@@ -2,22 +2,31 @@ import streamlit as st
 import pandas as pd
 import qc_core as qc
 
+# =========================
+# Page config + CSS
+# =========================
 qc.apply_page_config()
 qc.inject_global_css()
 
-# 1) Nếu chưa login -> render landing (hero + login) và STOP
+# =========================
+# LANDING PAGE
+# Hero + Login (khi chưa đăng nhập)
+# =========================
 if not qc.is_logged_in():
-    qc.render_global_header()     # giữ hero banner
-    qc.render_login_section()     # card login nằm dưới hero
+    qc.render_global_header()   # Hero banner
+    qc.render_login_section()   # Login card nằm dưới hero
     st.stop()
 
-# 2) Nếu đã login -> hiện app bình thường
+# =========================
+# SAU KHI ĐÃ ĐĂNG NHẬP
+# =========================
 qc.render_global_header()
-qc.render_topbar_user_logout()    # nút đăng xuất (em làm ở bước 3)
+qc.render_logout_button(where="sidebar")  # Nút Đăng xuất + badge user
 cfg = qc.render_sidebar()
 
-
-
+# =========================
+# QUICK ACTIONS
+# =========================
 st.markdown("### ⚡ Quick actions")
 
 qa_col1, qa_col2, qa_col3, qa_col4 = st.columns(4)
@@ -46,6 +55,9 @@ with qa_col4:
         icon="📘",
     )
 
+# =========================
+# DASHBOARD TỔNG QUAN
+# =========================
 st.markdown("### 📊 Dashboard nội kiểm – Tổng quan")
 
 col1, col2 = st.columns([2, 3])
@@ -76,7 +88,7 @@ with col1:
     else:
         st.caption(
             "Chưa thiết lập chỉ số thống kê cho xét nghiệm này. "
-            "Vào trang **1_Thiet_lap_chi_so_thong_ke**."
+            "Vào trang **1_Ghi_nhan_va_danh_gia**."
         )
 
 with col2:
