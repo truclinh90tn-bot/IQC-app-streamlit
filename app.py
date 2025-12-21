@@ -4,63 +4,41 @@ import pandas as pd
 import qc_core as qc
 
 # -----------------------------
-# Page config + theme
+# App bootstrap
 # -----------------------------
 qc.apply_page_config()
 qc.inject_global_css()
 
-# -----------------------------
-# Login gate (renders login UI if chưa đăng nhập)
-# -----------------------------
+# Always show hero banner on top
+qc.render_global_header()
+
+# Login gate (centered UI). Stops if not logged in.
 qc.require_login()
 
-# -----------------------------
-# Sidebar: cấu hình + nút đăng xuất
-# -----------------------------
-with st.sidebar:
-    st.markdown("### 👤 Tài khoản")
+# After login: show user badge + logout
+qc.render_user_bar(show_lab=True)
 
-    user = st.session_state.get("auth_user", "")
-    role = st.session_state.get("auth_role", "")
-    lab_id = st.session_state.get("auth_lab_id", "")
+# -----------------------------
+# Main app
+# -----------------------------
+tabs = st.tabs([
+    "🏠 Tổng quan",
+    "⚙️ Thiết lập",
+    "📘 Hướng dẫn",
+])
 
-    # Hiển thị thông tin tài khoản gọn + không lỗi cú pháp
-    st.markdown(
-        f"""
-        **User:** `{user}`  
-        **Role:** `{role}`  
-        **PXN:** `{lab_id}`
-        """.strip()
+with tabs[0]:
+    cfg = qc.render_sidebar()
+
+    sigma_cat, active_rules = qc.get_sigma_category_and_rules(
+        cfg["sigma_value"], cfg["num_levels"]
     )
 
-    if st.button("🚪 Đăng xuất", use_container_width=True):
-        qc.auth_logout()
+    qc.render_top_info_cards(cfg, sigma_cat, active_rules)
 
-# Render sidebar cấu hình (form thiết lập)
-cfg = qc.render_sidebar()
-
-# Sigma rules
-sigma_cat, active_rules = qc.get_sigma_category_and_rules(
-    cfg["sigma_value"], cfg["num_levels"]
-)
-
-# -----------------------------
-# Header / Hero banner
-# -----------------------------
-qc.render_global_header()
-qc.render_top_info_cards(cfg, sigma_cat, active_rules)
-
-# -----------------------------
-# Main layout: Tabs
-# -----------------------------
-tab_dash, tab_setup, tab_help = st.tabs(
-    ["📊 Dashboard", "⚙️ Thiết lập", "📘 Hướng dẫn"]
-)
-
-with tab_dash:
     st.markdown("### ⚡ Quick actions")
-    qa_col1, qa_col2, qa_col3, qa_col4 = st.columns(4)
 
+    qa_col1, qa_col2, qa_col3, qa_col4 = st.columns(4)
     with qa_col1:
         st.page_link(
             "pages/1_Thiet_lap_chi_so_thong_ke.py",
@@ -82,11 +60,12 @@ with tab_dash:
     with qa_col4:
         st.page_link(
             "pages/4_Huong_dan_va_About.py",
-            label="About",
+            label="Hướng dẫn",
             icon="📘",
         )
 
     st.markdown("### 📊 Dashboard nội kiểm – Tổng quan")
+
     col1, col2 = st.columns([2, 3])
 
     cur_state = qc.get_current_analyte_state()
@@ -94,7 +73,6 @@ with tab_dash:
     with col1:
         st.markdown("#### 📈 Tiến độ nhập dữ liệu IQC")
         daily_df = cur_state.get("daily_df")
-
         if isinstance(daily_df, pd.DataFrame) and not daily_df.empty:
             total_rows = len(daily_df)
             filled_rows = (
@@ -106,65 +84,36 @@ with tab_dash:
         else:
             st.info(
                 "Chưa có dữ liệu nội kiểm cho xét nghiệm này. "
-                "Vào tab **Quick actions** → **Ghi nhận & đánh giá** để nhập."
+                "Vào trang **2_Ghi_nhan_va_danh_gia** để nhập."
             )
 
         st.markdown("#### 🧮 Tóm tắt chỉ số thống kê")
         stats_df = cur_state.get("qc_stats")
-
         if isinstance(stats_df, pd.DataFrame) and not stats_df.empty:
             st.dataframe(stats_df, use_container_width=True, height=230)
         else:
             st.caption(
                 "Chưa thiết lập chỉ số thống kê cho xét nghiệm này. "
-                "Vào **Thiết lập chỉ số**."
+                "Vào trang **1_Thiet_lap_chi_so_thong_ke**."
             )
 
     with col2:
         st.markdown("#### 🧷 Tình trạng QC gần đây")
         summary_df = cur_state.get("summary_df")
-
         if isinstance(summary_df, pd.DataFrame) and not summary_df.empty:
             st.dataframe(summary_df.tail(10), use_container_width=True, height=260)
         else:
             st.caption(
                 "Chưa có đánh giá Westgard cho xét nghiệm này. "
-                "Vào **Ghi nhận & đánh giá** để tính."
+                "Vào trang **2_Ghi_nhan_va_danh_gia** để tính."
             )
 
-with tab_setup:
-    st.markdown("### ⚙️ Thiết lập (xem nhanh)")
-    st.caption(
-        "Các thiết lập chi tiết đang nằm ở **Sidebar** (bên trái). "
-        "Dưới đây là tóm tắt cấu hình hiện tại."
-    )
+with tabs[1]:
+    st.markdown("### ⚙️ Thiết lập")
+    st.caption("Chọn các mục thiết lập trong menu bên trái (sidebar) và dùng Quick actions để đi nhanh.")
+    st.page_link("pages/1_Thiet_lap_chi_so_thong_ke.py", label="🧮 Thiết lập chỉ số thống kê", icon="🧮")
+    st.page_link("pages/2_Ghi_nhan_va_danh_gia.py", label="✏️ Ghi nhận & đánh giá", icon="✏️")
 
-    show_keys = [
-        ("Đơn vị", "don_vi"),
-        ("Xét nghiệm", "test_name"),
-        ("Thiết bị", "device"),
-        ("Phương pháp", "method"),
-        ("Số mức nồng độ", "num_levels"),
-        ("Sigma", "sigma_value"),
-        ("Kỳ báo cáo", "report_period"),
-        ("QC lot", "qc_lot"),
-        ("HSD QC", "qc_expiry"),
-    ]
-
-    rows = [{"Mục": label, "Giá trị": cfg.get(key, "")} for label, key in show_keys]
-    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-
-    st.info(
-        "Muốn chuyển toàn bộ form thiết lập ra tab này (không dùng sidebar) thì em sẽ tách lại "
-        "hàm `render_sidebar()` thành `render_setup_tab()` để giao diện gọn và chuyên nghiệp hơn."
-    )
-
-with tab_help:
-    st.markdown("### 📘 Hướng dẫn nhanh")
-    st.markdown(
-        """
-        - **Dashboard**: xem tổng quan + đi nhanh sang các trang.
-        - **Thiết lập**: xem tóm tắt cấu hình (chỉnh trong sidebar).
-        - **Đăng xuất**: nút ở sidebar.
-        """.strip()
-    )
+with tabs[2]:
+    st.markdown("### 📘 Hướng dẫn")
+    st.page_link("pages/4_Huong_dan_va_About.py", label="Mở trang Hướng dẫn & About", icon="📘")
