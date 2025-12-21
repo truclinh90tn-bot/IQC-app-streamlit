@@ -110,120 +110,188 @@ def db_save_state(lab_id: str, analyte_key: str, state: dict) -> bool:
         return False
 
 
-def is_logged_in() -> bool:
-    return bool(st.session_state.get("auth_ok"))
-
-
 def auth_logout():
-    """Đăng xuất: xoá session + sign out Supabase (nếu có)."""
-    try:
-        if "supabase" in st.secrets:
-            from supabase import create_client
-
-            sb = st.secrets["supabase"]
-            supabase = create_client(sb["url"], sb["anon_key"])
-            supabase.auth.sign_out()
-    except Exception:
-        # Không làm sập UI nếu sign_out fail
-        pass
-
-    for k in ["auth_ok", "username", "role", "lab_id"]:
-        if k in st.session_state:
-            del st.session_state[k]
+    for k in ["auth_user", "auth_role", "auth_lab_id", "is_logged_in"]:
+        st.session_state.pop(k, None)
     _rerun()
 
 
+
+def is_logged_in() -> bool:
+    return bool(st.session_state.get("is_logged_in", False))
+
+
+def get_auth_context() -> dict:
+    return {
+        "user": st.session_state.get("auth_user"),
+        "role": st.session_state.get("auth_role"),
+        "lab_id": st.session_state.get("auth_lab_id"),
+    }
+
+
+def _verify_account_password(plain_password: str, stored_hash: str) -> bool:
+    """
+    stored_hash: bcrypt hash dạng $2a$... (tạo bởi Postgres crypt(..., gen_salt('bf')) hoặc bcrypt).
+    """
+    import bcrypt
+    try:
+        return bcrypt.checkpw(plain_password.encode("utf-8"), stored_hash.encode("utf-8"))
+    except Exception:
+        return False
+
+
+def auth_login(username: str, password: str) -> tuple[bool, str | None, str | None]:
+    """
+    Đăng nhập bằng bảng public.accounts (username, password_hash, role, lab_id).
+    Trả về (ok, role, lab_id).
+    """
+    if not supabase_is_configured():
+        st.error("Chưa cấu hình Supabase. Vào Streamlit → Settings → Secrets để thêm supabase.url và supabase.anon_key.")
+        return (False, None, None)
+
+    username = (username or "").strip()
+    password = password or ""
+    if not username or not password:
+        return (False, None, None)
+
+    sb = _get_supabase_client()
+    try:
+        resp = sb.table("accounts").select("username,password_hash,role,lab_id").eq("username", username).limit(1).execute()
+        rows = getattr(resp, "data", None) or []
+        if not rows:
+            return (False, None, None)
+        row = rows[0]
+        stored = row.get("password_hash") or ""
+        if not stored:
+            return (False, None, None)
+        if not _verify_account_password(password, stored):
+            return (False, None, None)
+
+        role = row.get("role") or "pxn"
+        lab_id = row.get("lab_id")
+        st.session_state["auth_user"] = username
+        st.session_state["auth_role"] = role
+        st.session_state["auth_lab_id"] = lab_id
+        st.session_state["is_logged_in"] = True
+        return (True, role, lab_id)
+    except Exception as e:
+        st.error(f"Lỗi đăng nhập (Supabase): {e}")
+        return (False, None, None)
+
+
+def render_login_section(title: str = "🔐 Đăng nhập IQC", subtitle: str = "Nhập tài khoản PXN được cấp để truy cập dữ liệu riêng.") -> bool:
+    """
+    Render card đăng nhập (dùng ở trang chủ). Trả về True nếu đã đăng nhập.
+    """
+    if is_logged_in():
+        return True
+
+    st.markdown("### " + title)
+    st.caption(subtitle)
+
+    # center 1/3 chiều ngang
+    left, mid, right = st.columns([1, 1, 1])
+    with mid:
+        with st.container(border=True):
+            u = st.text_input("Username", key="_login_user")
+            p = st.text_input("Password", type="password", key="_login_pass")
+            if st.button("Đăng nhập", type="primary", use_container_width=True):
+                ok, _, _ = auth_login(u, p)
+                if ok:
+                    st.success("Đăng nhập thành công.")
+                    _rerun()
+                else:
+                    st.error("Sai username hoặc password.")
+    return False
+
+
+
 def render_topbar_user_logout():
-    """Thanh trạng thái nhỏ: hiển thị user/PXN và nút đăng xuất."""
+    """
+    Hiển thị thông tin user/PXN và nút Đăng xuất (đặt trong sidebar để luôn thấy).
+    """
+    ctx = get_auth_context()
+    user = ctx.get("user") or "-"
+    lab_id = ctx.get("lab_id") or "-"
+    role = ctx.get("role") or "-"
+    with st.sidebar:
+        st.markdown("---")
+        st.caption(f"👤 **User:** `{user}`")
+        st.caption(f"🏷️ **PXN:** `{lab_id}`")
+        st.caption(f"🔑 **Role:** `{role}`")
+        if st.button("🚪 Đăng xuất", use_container_width=True):
+            auth_logout()
+
+
+def _legacy_require_login():
+    """
+    Gatekeeper: nếu chưa đăng nhập thì hiển thị form và dừng trang.
+    Dùng cho các page cần bảo vệ.
+    """
     if not is_logged_in():
-        return
+        render_login_section()
+        st.stop()
 
-    user = st.session_state.get("username") or st.session_state.get("user") or ""
-    lab_id = st.session_state.get("lab_id") or ""
 
-    left, right = st.columns([5, 1])
-    with left:
-        parts = []
-        if user:
-            parts.append(f"**User:** `{user}`")
-        if lab_id:
-            parts.append(f"**PXN:** `{lab_id}`")
-        if parts:
-            st.caption(" • ".join(parts))
-    with right:
+def render_topbar_user_logout():
+    """
+    Hiển thị thông tin user/PXN và nút Đăng xuất (đặt trong sidebar để luôn thấy).
+    """
+    ctx = get_auth_context()
+    user = ctx.get("user") or "-"
+    lab_id = ctx.get("lab_id") or "-"
+    role = ctx.get("role") or "-"
+    with st.sidebar:
+        st.markdown("---")
+        st.caption(f"👤 **User:** `{user}`")
+        st.caption(f"🏷️ **PXN:** `{lab_id}`")
+        st.caption(f"🔑 **Role:** `{role}`")
         if st.button("🚪 Đăng xuất", use_container_width=True):
             auth_logout()
 
 
 def require_login():
-    """Trang đăng nhập đặt ở trang chủ (giữ hero banner)."""
     import streamlit as st
     from supabase import create_client
 
-    if is_logged_in():
+    sb = st.secrets["supabase"]
+    supabase = create_client(sb["url"], sb["anon_key"])
+
+    if st.session_state.get("auth_ok"):
         return
 
-    # --- kiểm tra secrets ---
-    if "supabase" not in st.secrets:
-        st.error(
-            "Chưa cấu hình Supabase. Vào **Streamlit → Settings → Secrets** và thêm: "
-            "`supabase.url` + `supabase.anon_key` (hoặc `supabase.service_key`)."
-        )
-        st.stop()
+    st.title("🔐 Đăng nhập IQC")
 
-    sb = st.secrets["supabase"]
-    supabase = create_client(sb["url"], sb.get("anon_key") or sb.get("service_key"))
+    username = st.text_input("Username")
+    password = st.text_input("Password", type="password")
 
-    # --- UI: hero banner giữ nguyên tone, form 1/3 màn hình ---
-    render_global_header()
+    if st.button("Đăng nhập"):
+        email = f"{username}@iqc.local"
 
-    st.markdown("<div style='height: 10px'></div>", unsafe_allow_html=True)
-    _, mid, _ = st.columns([1, 1, 1])
-    with mid:
-        st.markdown(
-            """
-            <div class="card premium" style="padding:18px 18px 10px 18px;">
-              <div style="font-weight:800; font-size:22px; margin-bottom:6px;">🔐 Đăng nhập IQC</div>
-              <div style="opacity:.85; margin-bottom:14px;">Nhập tài khoản PXN được cấp để truy cập dữ liệu riêng.</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+        res = supabase.auth.sign_in_with_password({
+            "email": email,
+            "password": password
+        })
 
-        with st.form("login_form", clear_on_submit=False):
-            username = st.text_input("Username", key="login_username")
-            password = st.text_input("Password", type="password", key="login_password")
-            submitted = st.form_submit_button("Đăng nhập", use_container_width=True)
+        if res.user:
+            # lấy profile để biết lab_id
+            prof = (
+                supabase.table("profiles")
+                .select("username, role, lab_id")
+                .eq("user_id", res.user.id)
+                .single()
+                .execute()
+            )
 
-        if submitted:
-            username = (username or "").strip()
-            password = password or ""
-            if not username or not password:
-                st.error("Vui lòng nhập Username và Password.")
-                st.stop()
+            st.session_state["auth_ok"] = True
+            st.session_state["username"] = prof.data["username"]
+            st.session_state["role"] = prof.data["role"]
+            st.session_state["lab_id"] = prof.data["lab_id"]
 
-            email = f"{username}@iqc.local"
-            try:
-                res = supabase.auth.sign_in_with_password({"email": email, "password": password})
-            except Exception:
-                res = None
-
-            if res and getattr(res, "user", None):
-                prof = (
-                    supabase.table("profiles")
-                    .select("username, role, lab_id")
-                    .eq("user_id", res.user.id)
-                    .single()
-                    .execute()
-                )
-
-                st.session_state["auth_ok"] = True
-                st.session_state["username"] = prof.data.get("username", username)
-                st.session_state["role"] = prof.data.get("role", "pxn")
-                st.session_state["lab_id"] = prof.data.get("lab_id", "")
-                _rerun()
-            else:
-                st.error("Sai username hoặc password")
+            st.success(f"Đăng nhập PXN {st.session_state['lab_id']} thành công")
+            st.rerun()
+        else:
+            st.error("Sai username hoặc password")
 
     st.stop()
 
@@ -312,18 +380,37 @@ def get_theme() -> dict:
 
 
 def inject_global_css():
+    """
+    Nạp CSS giao diện (tone "luxury dashboard") cho toàn app.
+    Ưu tiên file theme.css ở root repo, fallback sang assets/theme.css.
+    """
     import streamlit as st
-    from pathlib import Path
+    import os
 
-    css_path = Path(__file__).parent / "assets" / "theme.css"
-    if css_path.exists():
-        st.markdown(
-            f"<style>{css_path.read_text(encoding='utf-8')}</style>",
-            unsafe_allow_html=True,
-        )
+    candidates = [
+        "theme.css",
+        os.path.join("assets", "theme.css"),
+        os.path.join("static", "theme.css"),
+    ]
 
+    css_text = ""
+    for p in candidates:
+        if os.path.exists(p):
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    css_text = f.read()
+                break
+            except Exception:
+                pass
 
-
+    if css_text:
+        st.markdown(f"<style>{css_text}</style>", unsafe_allow_html=True)
+    else:
+        # Không crash nếu thiếu CSS
+        st.session_state.setdefault("_qc_css_missing_warned", False)
+        if not st.session_state["_qc_css_missing_warned"]:
+            st.session_state["_qc_css_missing_warned"] = True
+            st.warning("Không tìm thấy theme.css (hoặc assets/theme.css). Giao diện có thể bị lệch tone.")
 def _init_multi_analyte_store():
     """Khởi tạo cấu trúc lưu nhiều xét nghiệm trong session_state."""
     if "iqc_multi" not in st.session_state:
