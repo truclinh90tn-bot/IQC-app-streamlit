@@ -22,26 +22,34 @@ except Exception:  # pragma: no cover
 
 
 def supabase_is_configured() -> bool:
-    """True khi secrets có đủ SUPABASE_URL + SUPABASE_SERVICE_KEY/ANON_KEY."""
-    try:
-        sb = st.secrets.get("supabase", {})
-        url = sb.get("url")
-        key = sb.get("service_key") or sb.get("anon_key")
-        return bool(url and key and create_client is not None)
-    except Exception:
+    sb = st.secrets.get("supabase", {})
+    if not isinstance(sb, dict):
         return False
+    url = sb.get("url")
+    key = sb.get("publishable_key") or sb.get("anon_key") or sb.get("secret_key") or sb.get("service_key")
+    return bool(url and key)
 
 
-@st.cache_resource
-def _get_supabase_client():
+_SUPABASE_CLIENT = None
+
+def get_supabase_client():
+    """Create (cached) Supabase client from Streamlit secrets."""
+    global _SUPABASE_CLIENT
+    if _SUPABASE_CLIENT is not None:
+        return _SUPABASE_CLIENT
+
+    if not supabase_is_configured():
+        return None
+
     sb = st.secrets.get("supabase", {})
     url = sb.get("url")
-    key = sb.get("service_key") or sb.get("anon_key")
-    if not url or not key:
-        raise RuntimeError("Missing Supabase secrets: supabase.url and supabase.service_key/anon_key")
-    if create_client is None:
-        raise RuntimeError("Missing dependency: supabase (pip install supabase)")
-    return create_client(url, key)
+    # Prefer secret/service key for server-side operations; otherwise use publishable/anon
+    key = sb.get("secret_key") or sb.get("service_key") or sb.get("publishable_key") or sb.get("anon_key")
+    try:
+        _SUPABASE_CLIENT = create_client(url, key)
+    except Exception:
+        _SUPABASE_CLIENT = None
+    return _SUPABASE_CLIENT
 
 
 def _df_to_records(df: pd.DataFrame) -> list:
@@ -110,58 +118,174 @@ def db_save_state(lab_id: str, analyte_key: str, state: dict) -> bool:
         return False
 
 
+def _render_user_chip_and_logout():
+    u = st.session_state.get("current_user") or {}
+    username = u.get("username") or st.session_state.get("username") or "user"
+    lab_id = u.get("lab_id") or st.session_state.get("lab_id") or ""
+    role = u.get("role") or st.session_state.get("role") or ""
+    badge = f"👤 {username}"
+    if lab_id:
+        badge += f" · {lab_id}"
+    if role:
+        badge += f" · {role}"
+
+    st.markdown(
+        f"""<div class="qc-userbar"><span class="qc-userchip">{badge}</span></div>""",
+        unsafe_allow_html=True,
+    )
+    if st.button("Đăng xuất", use_container_width=True, key="btn_logout"):
+        auth_logout()
+        st.rerun()
+
+
 def auth_logout():
-    for k in ["auth_user", "auth_role", "auth_lab_id", "is_logged_in"]:
-        st.session_state.pop(k, None)
-    _rerun()
+    """Clear login session and per-user cached state."""
+    for k in [
+        "auth_ok",
+        "current_user",
+        "username",
+        "role",
+        "lab_id",
+        "login_username",
+        "login_password",
+    ]:
+        if k in st.session_state:
+            del st.session_state[k]
+
+    # Clear app state that should be per-user
+    for k in list(st.session_state.keys()):
+        if k.startswith("qc_") or k.startswith("_analyte_") or k in {"_analyte_state_cache"}:
+            try:
+                del st.session_state[k]
+            except Exception:
+                pass
 
 
 def require_login():
-    import streamlit as st
-    from supabase import create_client
+    """Gate the app behind a username/password login stored in public.accounts.
 
-    sb = st.secrets["supabase"]
-    supabase = create_client(sb["url"], sb["anon_key"])
+    Expects Streamlit secrets:
+      [supabase]
+      url = "https://<project-ref>.supabase.co"
+      # use ONE of the following (new Supabase keys are publishable/secret)
+      publishable_key = "sb_publishable_..."   # recommended for apps
+      anon_key = "..."                         # older naming (still ok)
+      secret_key = "sb_secret_..."             # server-only (optional)
+      service_key = "..."                      # older naming (optional)
+    """
 
+    # Already logged in
     if st.session_state.get("auth_ok"):
+        # Convenience mirror keys
+        u = st.session_state.get("current_user") or {}
+        st.session_state["username"] = u.get("username", st.session_state.get("username"))
+        st.session_state["role"] = u.get("role", st.session_state.get("role"))
+        st.session_state["lab_id"] = u.get("lab_id", st.session_state.get("lab_id"))
+        # Sidebar quick logout
+        with st.sidebar:
+            st.markdown("""<div style="margin-top:0.25rem"></div>""", unsafe_allow_html=True)
+            _render_user_chip_and_logout()
         return
 
-    st.title("🔐 Đăng nhập IQC")
+    # If Supabase missing → show friendly message
+    if not supabase_is_configured():
+        render_global_header()
+        st.warning(
+            "Chưa cấu hình Supabase để lưu dữ liệu theo PXN.\n\n"
+            "Vào **Streamlit → Settings → Secrets** và thêm:\n"
+            "- `supabase.url`\n"
+            "- `supabase.publishable_key` (hoặc `supabase.anon_key`)\n"
+            "(Tuỳ chọn) `supabase.secret_key` (hoặc `supabase.service_key`)\n\n"
+            "Sau đó **Save** và **Rerun** lại app."
+        )
+        st.stop()
 
-    username = st.text_input("Username")
-    password = st.text_input("Password", type="password")
+    sb = st.secrets.get("supabase", {})
+    url = sb.get("url")
+    key = sb.get("publishable_key") or sb.get("anon_key") or sb.get("secret_key") or sb.get("service_key")
+    if not url or not key:
+        render_global_header()
+        st.error("Thiếu `supabase.url` hoặc key trong Secrets.")
+        st.stop()
 
-    if st.button("Đăng nhập"):
-        email = f"{username}@iqc.local"
+    supabase = create_client(url, key)
 
-        res = supabase.auth.sign_in_with_password({
-            "email": email,
-            "password": password
-        })
+    # --- Login UI (keep hero banner) ---
+    render_global_header()
 
-        if res.user:
-            # lấy profile để biết lab_id
-            prof = (
-                supabase.table("profiles")
-                .select("username, role, lab_id")
-                .eq("user_id", res.user.id)
-                .single()
-                .execute()
-            )
+    # Centered login card below banner
+    left, mid, right = st.columns([1.2, 1.1, 1.2])
+    with mid:
+        st.markdown("""<div class="qc-card qc-login-card">""", unsafe_allow_html=True)
+        st.markdown("### 🔐 Đăng nhập")
+        username = st.text_input("Username", key="login_username")
+        password = st.text_input("Password", type="password", key="login_password")
 
-            st.session_state["auth_ok"] = True
-            st.session_state["username"] = prof.data["username"]
-            st.session_state["role"] = prof.data["role"]
-            st.session_state["lab_id"] = prof.data["lab_id"]
+        col_a, col_b = st.columns([1, 1])
+        with col_a:
+            do_login = st.button("Đăng nhập", use_container_width=True)
+        with col_b:
+            st.caption("")
 
-            st.success(f"Đăng nhập PXN {st.session_state['lab_id']} thành công")
-            st.rerun()
-        else:
-            st.error("Sai username hoặc password")
+        if do_login:
+            username_norm = (username or "").strip()
+            if not username_norm or not password:
+                st.error("Vui lòng nhập Username và Password.")
+                st.stop()
+
+            # Query accounts table; password_hash is bcrypt via crypt()
+            try:
+                # 1) Load user row
+                res = supabase.table("accounts").select("username,password_hash,role,lab_id").eq("username", username_norm).limit(1).execute()
+                rows = getattr(res, "data", None) or []
+                if not rows:
+                    st.error("Sai username hoặc password.")
+                    st.stop()
+
+                row = rows[0]
+                # 2) Verify password using Postgres crypt()
+                #    We verify by asking Postgres: crypt(plain, stored_hash) == stored_hash
+                #    (Avoid bcrypt Python 72-byte edge-cases and keep one source of truth.)
+                verify_sql = "select (crypt($1, $2) = $2) as ok"
+                # Use RPC via SQL? Supabase-py doesn't expose raw SQL by default.
+                # Fallback: do verification using passlib if available.
+                ok = False
+                try:
+                    from passlib.hash import bcrypt as _bcrypt
+                    ok = _bcrypt.verify(password, row.get("password_hash", ""))
+                except Exception:
+                    ok = False
+
+                if not ok:
+                    st.error("Sai username hoặc password.")
+                    st.stop()
+
+                # Success
+                user = {
+                    "username": row.get("username"),
+                    "role": row.get("role") or "pxn",
+                    "lab_id": row.get("lab_id"),
+                }
+                st.session_state["auth_ok"] = True
+                st.session_state["current_user"] = user
+                st.session_state["username"] = user["username"]
+                st.session_state["role"] = user["role"]
+                st.session_state["lab_id"] = user["lab_id"]
+
+                # Clear per-user analyte state cache to avoid cross-user bleed
+                for k in ["_analyte_state_cache", "_current_analyte", "_supabase_cache"]:
+                    if k in st.session_state:
+                        del st.session_state[k]
+
+                st.success("Đăng nhập thành công.")
+                st.rerun()
+
+            except Exception as e:
+                st.error(f"Lỗi đăng nhập: {e}")
+
+        st.markdown("</div>", unsafe_allow_html=True)
 
     st.stop()
-
-
 
 
 def _rerun():
