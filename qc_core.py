@@ -6,22 +6,228 @@ from io import BytesIO
 import altair as alt
 import numpy as np
 import pandas as pd
+
 import streamlit as st
 
-# Auth + DB (refactored)
-from auth import (
-    is_logged_in,
-    require_login,
-    auth_logout,
-    render_login_section,
-    render_logout_button,
-    get_current_user,
-)
-from supabase_client import (
-    supabase_is_configured,
-    db_load_state,
-    db_save_state,
-)
+# Optional dependencies (chỉ cần khi bật Supabase)
+try:
+    from supabase import create_client  # type: ignore
+except Exception:  # pragma: no cover
+    create_client = None
+
+try:
+    from passlib.hash import bcrypt  # type: ignore
+except Exception:  # pragma: no cover
+    bcrypt = None
+
+
+def supabase_is_configured() -> bool:
+    """True khi secrets có đủ SUPABASE_URL + SUPABASE_SERVICE_KEY/ANON_KEY."""
+    try:
+        sb = st.secrets.get("supabase", {})
+        url = sb.get("url")
+        key = sb.get("service_key") or sb.get("anon_key")
+        return bool(url and key and create_client is not None)
+    except Exception:
+        return False
+
+
+@st.cache_resource
+def _get_supabase_client():
+    sb = st.secrets.get("supabase", {})
+    url = sb.get("url")
+    key = sb.get("service_key") or sb.get("anon_key")
+    if not url or not key:
+        raise RuntimeError("Missing Supabase secrets: supabase.url and supabase.service_key/anon_key")
+    if create_client is None:
+        raise RuntimeError("Missing dependency: supabase (pip install supabase)")
+    return create_client(url, key)
+
+
+def _df_to_records(df: pd.DataFrame) -> list:
+    if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+        return []
+    _df = df.copy()
+    # Chuyển Timestamp -> ISO string
+    for c in _df.columns:
+        if np.issubdtype(_df[c].dtype, np.datetime64):
+            _df[c] = _df[c].astype("datetime64[ns]").dt.strftime("%Y-%m-%d")
+    return _df.to_dict(orient="records")
+
+
+def _records_to_df(records) -> pd.DataFrame:
+    if not records:
+        return pd.DataFrame()
+    return pd.DataFrame(records)
+
+
+def db_load_state(lab_id: str, analyte_key: str) -> dict | None:
+    """Load toàn bộ state của 1 xét nghiệm (analyte_key) theo lab_id."""
+    if not supabase_is_configured():
+        return None
+    try:
+        client = _get_supabase_client()
+        resp = (
+            client.table("iqc_state")
+            .select("state")
+            .eq("lab_id", lab_id)
+            .eq("analyte_key", analyte_key)
+            .limit(1)
+            .execute()
+        )
+        data = getattr(resp, "data", None) or []
+        if not data:
+            return None
+        state = data[0].get("state")
+        if not isinstance(state, dict):
+            return None
+        # Restore DataFrames
+        for k in ["qc_stats", "daily_df", "summary_df", "chart_df"]:
+            if k in state and isinstance(state[k], list):
+                state[k] = _records_to_df(state[k])
+        return state
+    except Exception:
+        return None
+
+
+def db_save_state(lab_id: str, analyte_key: str, state: dict) -> bool:
+    """Upsert state về Supabase. Chỉ lưu các thành phần cần thiết."""
+    if not supabase_is_configured():
+        return False
+    try:
+        client = _get_supabase_client()
+        payload = dict(state)
+        # Serialize DataFrames
+        for k in ["qc_stats", "daily_df", "summary_df", "chart_df"]:
+            if k in payload and isinstance(payload[k], pd.DataFrame):
+                payload[k] = _df_to_records(payload[k])
+        client.table("iqc_state").upsert(
+            {"lab_id": lab_id, "analyte_key": analyte_key, "state": payload},
+            on_conflict="lab_id,analyte_key",
+        ).execute()
+        return True
+    except Exception:
+        return False
+
+
+def is_logged_in() -> bool:
+    return bool(st.session_state.get("auth_ok"))
+
+
+def auth_logout():
+    """Đăng xuất: xoá session + sign out Supabase (nếu có)."""
+    try:
+        if "supabase" in st.secrets:
+            from supabase import create_client
+
+            sb = st.secrets["supabase"]
+            supabase = create_client(sb["url"], sb["anon_key"])
+            supabase.auth.sign_out()
+    except Exception:
+        # Không làm sập UI nếu sign_out fail
+        pass
+
+    for k in ["auth_ok", "username", "role", "lab_id"]:
+        if k in st.session_state:
+            del st.session_state[k]
+    _rerun()
+
+
+def render_topbar_user_logout():
+    """Thanh trạng thái nhỏ: hiển thị user/PXN và nút đăng xuất."""
+    if not is_logged_in():
+        return
+
+    user = st.session_state.get("username") or st.session_state.get("user") or ""
+    lab_id = st.session_state.get("lab_id") or ""
+
+    left, right = st.columns([5, 1])
+    with left:
+        parts = []
+        if user:
+            parts.append(f"**User:** `{user}`")
+        if lab_id:
+            parts.append(f"**PXN:** `{lab_id}`")
+        if parts:
+            st.caption(" • ".join(parts))
+    with right:
+        if st.button("🚪 Đăng xuất", use_container_width=True):
+            auth_logout()
+
+
+def require_login():
+    """Trang đăng nhập đặt ở trang chủ (giữ hero banner)."""
+    import streamlit as st
+    from supabase import create_client
+
+    if is_logged_in():
+        return
+
+    # --- kiểm tra secrets ---
+    if "supabase" not in st.secrets:
+        st.error(
+            "Chưa cấu hình Supabase. Vào **Streamlit → Settings → Secrets** và thêm: "
+            "`supabase.url` + `supabase.anon_key` (hoặc `supabase.service_key`)."
+        )
+        st.stop()
+
+    sb = st.secrets["supabase"]
+    supabase = create_client(sb["url"], sb.get("anon_key") or sb.get("service_key"))
+
+    # --- UI: hero banner giữ nguyên tone, form 1/3 màn hình ---
+    render_global_header()
+
+    st.markdown("<div style='height: 10px'></div>", unsafe_allow_html=True)
+    _, mid, _ = st.columns([1, 1, 1])
+    with mid:
+        st.markdown(
+            """
+            <div class="card premium" style="padding:18px 18px 10px 18px;">
+              <div style="font-weight:800; font-size:22px; margin-bottom:6px;">🔐 Đăng nhập IQC</div>
+              <div style="opacity:.85; margin-bottom:14px;">Nhập tài khoản PXN được cấp để truy cập dữ liệu riêng.</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        with st.form("login_form", clear_on_submit=False):
+            username = st.text_input("Username", key="login_username")
+            password = st.text_input("Password", type="password", key="login_password")
+            submitted = st.form_submit_button("Đăng nhập", use_container_width=True)
+
+        if submitted:
+            username = (username or "").strip()
+            password = password or ""
+            if not username or not password:
+                st.error("Vui lòng nhập Username và Password.")
+                st.stop()
+
+            email = f"{username}@iqc.local"
+            try:
+                res = supabase.auth.sign_in_with_password({"email": email, "password": password})
+            except Exception:
+                res = None
+
+            if res and getattr(res, "user", None):
+                prof = (
+                    supabase.table("profiles")
+                    .select("username, role, lab_id")
+                    .eq("user_id", res.user.id)
+                    .single()
+                    .execute()
+                )
+
+                st.session_state["auth_ok"] = True
+                st.session_state["username"] = prof.data.get("username", username)
+                st.session_state["role"] = prof.data.get("role", "pxn")
+                st.session_state["lab_id"] = prof.data.get("lab_id", "")
+                _rerun()
+            else:
+                st.error("Sai username hoặc password")
+
+    st.stop()
+
+
 
 
 def _rerun():
@@ -31,102 +237,78 @@ def _rerun():
     elif hasattr(st, "experimental_rerun"):
         st.experimental_rerun()
 
-
 def _img_to_base64(path: str) -> str:
     """Đọc file ảnh và trả về data URI base64 để nhúng vào HTML."""
     try:
         import base64
         if not os.path.exists(path):
             return ""
+        ext = os.path.splitext(path)[1].lower()
+        mime = "image/png"
+        if ext == ".gif":
+            mime = "image/gif"
+        elif ext in [".jpg", ".jpeg"]:
+            mime = "image/jpeg"
         with open(path, "rb") as f:
-            data = base64.b64encode(f.read()).decode("utf-8")
-        ext = os.path.splitext(path)[1].lower().replace(".", "")
-        mime = "png" if ext in ["png"] else ("jpeg" if ext in ["jpg", "jpeg"] else ext)
-        return f"data:image/{mime};base64,{data}"
+            b64 = base64.b64encode(f.read()).decode("utf-8")
+        return f"data:{mime};base64,{b64}"
     except Exception:
         return ""
 
 
 # =====================================================
-# PAGE CONFIG & THEME
+# CẤU HÌNH CHUNG & GIAO DIỆN PREMIUM (Warm Gold)
+# - Màu được quản lý tập trung qua file JSON: assets/theme_premium.json
+# - Streamlit theme (config.toml) chỉ hỗ trợ một phần; CSS bên dưới sẽ "diệt sạch" màu lạc tông.
 # =====================================================
-
-
-# =========================
-# Auth wrappers + UI (login/logout)
-# =========================
-# Keep a reference to the original functions imported from auth
-_auth_is_logged_in = is_logged_in
-_auth_require_login = require_login
-
-def is_logged_in() -> bool:
-    """Return True if user already authenticated."""
-    try:
-        return bool(_auth_is_logged_in())
-    except Exception:
-        return False
-
-def require_login() -> None:
-    """Render a centered login UI if not logged in (keeps width gọn), then stop."""
-    if not auth_is_configured():
-        st.error("Chưa cấu hình Supabase/Secrets. Vui lòng cấu hình **Streamlit → Settings → Secrets** rồi **Rerun**.")
-        st.stop()
-
-    if is_logged_in():
-        return
-
-    # Center the login card to ~1/3 page width
-    left, mid, right = st.columns([1, 1, 1])
-    with mid:
-        auth_login_ui()
-    st.stop()
-
-def render_user_bar(show_lab: bool = True) -> None:
-    """Show current user + lab + logout button (usually placed right under hero)."""
-    ctx = {}
-    try:
-        ctx = get_user_context() or {}
-    except Exception:
-        ctx = {}
-
-    user = ctx.get("username") or ""
-    lab_id = ctx.get("lab_id") or ""
-
-    c1, c2, c3 = st.columns([6, 3, 2])
-    with c2:
-        if user:
-            if show_lab and lab_id:
-                st.caption(f"**User:** `{user}`  •  **PXN:** `{lab_id}`")
-            else:
-                st.caption(f"**User:** `{user}`")
-    with c3:
-        if st.button("🚪 Đăng xuất", use_container_width=True):
-            try:
-                auth_logout()
-            finally:
-                st.rerun()
 
 def apply_page_config():
     st.set_page_config(
-        page_title="IQC Dashboard",
+        page_title="Nội kiểm tra chất lượng xét nghiệm",
         page_icon="🧪",
         layout="wide",
-        initial_sidebar_state="expanded",
     )
 
 
-def get_theme():
-    """
-    Giữ lại để tương thích code cũ nếu có nơi gọi.
-    (Hiện theme chính nằm trong assets/theme.css)
-    """
-    return {
-        "bg": "#F7F9FC",
-        "gold": "#B88A2B",
-        "goldHover": "#A97A1F",
-        "text": "#1F2937",
-        "muted": "#6B7280",
-    }
+THEME_DEFAULT = {
+    "bg": "#FFFCF7",
+    "panel": "#E1C18A",
+    "panelDark": "#D2AA63",
+    "gold": "#B88A2B",
+    "goldHover": "#A77C25",
+    "goldSoft": "rgba(184, 138, 43, 0.18)",
+    "text": "#2D2318",
+    "text2": "#6B5A44",
+    "error": "#A94442",
+    "warning": "#C28F2C",
+    "cardStrong": "#FFFFFF",
+    "border": "rgba(184, 138, 43, 0.34)",
+    "shadow": "rgba(15, 23, 42, 0.14)",
+    "shadowStrong": "rgba(15, 23, 42, 0.20)",
+    "chartBg": "#FFFFFF",
+    "grid": "rgba(45, 35, 24, 0.18)",
+}
+
+
+def get_theme() -> dict:
+    """Đọc theme từ JSON (nếu có), cache trong session_state."""
+    if "qc_theme" in st.session_state and isinstance(st.session_state["qc_theme"], dict):
+        return st.session_state["qc_theme"]
+
+    theme_path = os.path.join("assets", "theme_premium.json")
+    theme = dict(THEME_DEFAULT)
+    try:
+        if os.path.exists(theme_path):
+            with open(theme_path, "r", encoding="utf-8") as f:
+                user_theme = json.load(f)
+            if isinstance(user_theme, dict):
+                theme.update({k: v for k, v in user_theme.items() if v})
+    except Exception:
+        # giữ default nếu đọc lỗi
+        theme = dict(THEME_DEFAULT)
+
+    st.session_state["qc_theme"] = theme
+    return theme
 
 
 def inject_global_css():
@@ -141,9 +323,6 @@ def inject_global_css():
         )
 
 
-# =====================================================
-# MULTI-ANALYTE STORE
-# =====================================================
 
 def _init_multi_analyte_store():
     """Khởi tạo cấu trúc lưu nhiều xét nghiệm trong session_state."""
@@ -156,6 +335,7 @@ def _init_multi_analyte_store():
     active = st.session_state["active_analyte"]
 
     if active not in store:
+        # Default in-memory state
         store[active] = {
             "config": {
                 "test_name": active,
@@ -173,18 +353,20 @@ def _init_multi_analyte_store():
             "daily_df": None,
             "z_df": None,
             "summary_df": None,
+            "point_df": None,
+            "export_df": None,
         }
 
-        # Load saved state (per lab_id + analyte) when available
+        # (NEW) Nếu đã đăng nhập + có Supabase secrets -> load state đã lưu
         try:
-            u = get_current_user()
-            if u and u.get("lab_id") and supabase_is_configured():
-                loaded = db_load_state(u["lab_id"], active)
+            user = st.session_state.get("current_user")
+            if user and user.get("lab_id") and supabase_is_configured():
+                loaded = db_load_state(user["lab_id"], active)
                 if loaded:
                     store[active] = loaded
         except Exception:
+            # Không làm app crash nếu DB lỗi
             pass
-
     st.session_state["iqc_multi"] = store
     return store, active
 
@@ -203,11 +385,11 @@ def update_current_analyte_state(**kwargs):
     store[active] = cur
     st.session_state["iqc_multi"] = store
 
-    # autosave DB if logged in + configured
+    # (NEW) autosave DB (nếu đã login)
     try:
-        u = get_current_user()
-        if u and u.get("lab_id") and supabase_is_configured():
-            db_save_state(u["lab_id"], active, cur)
+        user = st.session_state.get("current_user")
+        if user and user.get("lab_id") and supabase_is_configured():
+            db_save_state(user["lab_id"], active, cur)
     except Exception:
         pass
 
@@ -215,6 +397,7 @@ def update_current_analyte_state(**kwargs):
 # =====================================================
 # SIDEBAR & HEADER
 # =====================================================
+
 
 def render_sidebar():
     """
@@ -224,6 +407,7 @@ def render_sidebar():
     store, active = _init_multi_analyte_store()
 
     with st.sidebar:
+        # Logo nhỏ + menu điều hướng (ẩn menu mặc định bằng CSS)
         logo_path = "assets/qc_logo.png"
         if os.path.exists(logo_path):
             st.image(logo_path, width=120)
@@ -274,51 +458,99 @@ def render_sidebar():
                         "daily_df": None,
                         "z_df": None,
                         "summary_df": None,
+                        "point_df": None,
+                        "export_df": None,
                     }
-                    st.session_state["iqc_multi"] = store
-                    st.session_state["active_analyte"] = name
-                    _rerun()
+                st.session_state["active_analyte"] = name
+                store, active = _init_multi_analyte_store()
+                cur = store[active]
+                _rerun()
 
         st.markdown("---")
+        st.markdown("### ⚙️ Thông tin xét nghiệm")
 
         cfg = cur.get("config", {})
-        cfg["don_vi"] = st.text_input("Đơn vị", value=cfg.get("don_vi", ""))
-        cfg["test_name"] = st.text_input("Tên xét nghiệm", value=cfg.get("test_name", active))
-        cfg["unit"] = st.text_input("Đơn vị đo", value=cfg.get("unit", ""))
-        cfg["device"] = st.text_input("Thiết bị", value=cfg.get("device", ""))
-        cfg["method"] = st.text_input("Phương pháp", value=cfg.get("method", ""))
-        cfg["qc_name"] = st.text_input("Tên QC", value=cfg.get("qc_name", ""))
-        cfg["qc_lot"] = st.text_input("Lô QC", value=cfg.get("qc_lot", ""))
-        cfg["qc_expiry"] = st.text_input("HSD QC", value=cfg.get("qc_expiry", ""))
-        cfg["report_period"] = st.text_input("Kỳ báo cáo (VD: 12/2025)", value=cfg.get("report_period", ""))
+        test_name = st.text_input("Tên xét nghiệm", value=cfg.get("test_name", ""))
+        unit = st.text_input("Đơn vị đo", value=cfg.get("unit", ""))
+        device = st.text_input("Thiết bị", value=cfg.get("device", ""))
+        method = st.text_input("Phương pháp", value=cfg.get("method", ""))
+        qc_name = st.text_input("Tên QC", value=cfg.get("qc_name", ""))
+        qc_lot = st.text_input("LOT QC", value=cfg.get("qc_lot", ""))
+        qc_expiry = st.text_input("Hạn dùng QC", value=cfg.get("qc_expiry", ""))
 
-        cfg["num_levels"] = st.selectbox("Số mức nồng độ", [2, 3], index=0 if int(cfg.get("num_levels", 2)) == 2 else 1)
-        cfg["sigma_value"] = st.number_input("Sigma phương pháp", min_value=1.0, max_value=10.0, value=float(cfg.get("sigma_value", 6.0)), step=0.1)
 
-        cur["config"] = cfg
-        store[active] = cur
-        st.session_state["iqc_multi"] = store
+        st.markdown("---")
+        st.markdown("### 🧾 Thông tin biểu mẫu")
+        report_period = st.text_input("Tháng / Năm", value=cfg.get("report_period", ""))
+        don_vi = st.text_input("Đơn vị", value=cfg.get("don_vi", ""))
+        phien_ban = st.text_input("Phiên bản", value=cfg.get("phien_ban", ""))
+        ngay_hieu_luc = st.text_input("Ngày hiệu lực", value=cfg.get("ngay_hieu_luc", ""))
 
-    return cfg
+        st.markdown("---")
+        st.markdown("### 🎚️ Cấu hình nội kiểm")
+
+        num_levels = st.radio(
+            "Số mức QC",
+            [2, 3],
+            index=0 if cfg.get("num_levels", 2) == 2 else 1,
+            horizontal=True,
+        )
+
+        sigma_value = st.number_input(
+            "Sigma phương pháp (nếu có)",
+            min_value=0.0,
+            value=float(cfg.get("sigma_value", 6.0)),
+            step=0.1,
+            help="Nếu =0 hoặc <4, app dùng bộ quy tắc nhóm <4-sigma.",
+        )
+
+        st.markdown("---")
+        st.caption(
+            "💡 Copyright © 2025 LINH CSQL."
+        )
+
+    cfg_new = {
+        "test_name": test_name,
+        "unit": unit,
+        "device": device,
+        "method": method,
+        "qc_name": qc_name,
+        "qc_lot": qc_lot,
+        "qc_expiry": qc_expiry,
+        "report_period": report_period,
+        "don_vi": don_vi,
+        "phien_ban": phien_ban,
+        "ngay_hieu_luc": ngay_hieu_luc,
+        "num_levels": num_levels,
+        "sigma_value": sigma_value,
+    }
+    cur["config"] = cfg_new
+    store[active] = cur
+    st.session_state["iqc_multi"] = store
+    st.session_state["active_analyte"] = active
+    st.session_state["iqc_config"] = cfg_new  # để tiện nếu code cũ có dùng
+    return cfg_new
 
 
 def render_global_header():
-    """Hero banner / header."""
-    logo_path = "assets/qc_logo.png"
-    logo_data = _img_to_base64(logo_path) if os.path.exists(logo_path) else ""
+    gif_data = _img_to_base64("assets/header_anim.gif")
+    gif_html = (
+        f"<img class='qc-header-gif' src='{gif_data}' alt='IQC animation'/>"
+        if gif_data else ""
+    )
 
     st.markdown(
         f"""
-        <div class="qc-hero">
-          <div style="display:flex; align-items:center; gap:14px;">
-            {'<img src="'+logo_data+'" style="height:56px; width:auto;" />' if logo_data else ''}
-            <div>
-              <h2 style="margin:0;">📊 Dashboard Nội kiểm – IQC</h2>
-              <p style="margin:6px 0 0 0;">
-                Theo dõi chất lượng xét nghiệm theo Westgard & Levey–Jennings •
-                Lưu dữ liệu theo PXN (RLS)
-              </p>
+        <div class="qc-header">
+          <div class="qc-header-inner">
+            <div class="qc-title-block">
+              <div class="qc-badge">
+                <span>Internal Quality Control • Levey–Jennings • Westgard • Sigma</span>
+              </div>
+              <h1>PHẦN MỀM NỘI KIỂM TRA CHẤT LƯỢNG XÉT NGHIỆM</h1>
+              <p>🧪 Theo dõi IQC, cảnh báo sai số theo Westgard, tối ưu hoá nội kiểm dựa trên sigma.</p>
             </div>
+            <div class="qc-gif-wrap">{gif_html}</div>
           </div>
         </div>
         """,
@@ -326,338 +558,513 @@ def render_global_header():
     )
 
 
-# =====================================================
-# SIGMA / RULES
-# =====================================================
+def render_top_info_cards(cfg, sigma_cat, active_rules):
+    c1, c2, c3 = st.columns(3)
 
-def get_sigma_category_and_rules(sigma_value: float, num_levels: int):
-    sigma_value = float(sigma_value)
-    if sigma_value >= 6:
-        return "≥ 6σ", ["13s", "22s", "R4s", "41s", "10x"]
-    if sigma_value >= 5:
-        return "5σ", ["13s", "22s", "R4s"]
-    if sigma_value >= 4:
-        return "4σ", ["13s", "22s"]
-    return "< 4σ", ["12s"]
-
-
-# =====================================================
-# HELPERS: stats, zscore, etc.
-# =====================================================
-
-def compute_zscore(x, mean, sd):
-    if sd == 0 or sd is None or np.isnan(sd):
-        return np.nan
-    return (x - mean) / sd
-
-
-def _safe_float(v, default=np.nan):
-    try:
-        if v is None:
-            return default
-        return float(v)
-    except Exception:
-        return default
-
-
-def _as_int(v, default=0):
-    try:
-        return int(v)
-    except Exception:
-        return default
-
-
-# =====================================================
-# WESTGARD EVALUATION (FULL — from original file)
-# =====================================================
-
-def _rule_12s(z):
-    return abs(z) > 2
-
-
-def _rule_13s(z):
-    return abs(z) > 3
-
-
-def _rule_22s(z1, z2):
-    # two consecutive controls beyond 2SD on same side
-    return (z1 > 2 and z2 > 2) or (z1 < -2 and z2 < -2)
-
-
-def _rule_r4s(z1, z2):
-    return (z1 > 2 and z2 < -2) or (z1 < -2 and z2 > 2) or abs(z1 - z2) > 4
-
-
-def _rule_41s(z_list):
-    # 4 consecutive results beyond 1SD on same side
-    if len(z_list) < 4:
-        return False
-    last4 = z_list[-4:]
-    return all(z > 1 for z in last4) or all(z < -1 for z in last4)
-
-
-def _rule_10x(z_list):
-    # 10 consecutive on same side of mean
-    if len(z_list) < 10:
-        return False
-    last10 = z_list[-10:]
-    return all(z > 0 for z in last10) or all(z < 0 for z in last10)
-
-
-def evaluate_westgard(z_df: pd.DataFrame, active_rules):
-    """
-    Evaluate Westgard rules based on z-score dataframe.
-    z_df columns: ['Ngày/Lần', 'Ctrl 1', 'Ctrl 2', ...] or similar
-    Returns: summary_df, point_df
-    """
-    if z_df is None or not isinstance(z_df, pd.DataFrame) or z_df.empty:
-        return pd.DataFrame(), pd.DataFrame()
-
-    df = z_df.copy()
-    df.columns = [str(c) for c in df.columns]
-
-    ctrl_cols = [c for c in df.columns if c.lower().startswith("ctrl")]
-    if "Ngày/Lần" in df.columns:
-        run_col = "Ngày/Lần"
-    elif "Run" in df.columns:
-        run_col = "Run"
-    else:
-        run_col = df.columns[0]
-
-    # Prepare lists of per-control z history
-    z_hist = {c: [] for c in ctrl_cols}
-
-    summary_rows = []
-    point_rows = []
-
-    for i in range(len(df)):
-        run = df.iloc[i][run_col]
-        ctrl_vals = {c: _safe_float(df.iloc[i][c]) for c in ctrl_cols}
-
-        # update histories
-        for c in ctrl_cols:
-            z_hist[c].append(ctrl_vals[c])
-
-        rejs = []
-        warns = []
-
-        # apply rules
-        # 1_2s warning typically
-        if "12s" in active_rules:
-            for c in ctrl_cols:
-                if _rule_12s(ctrl_vals[c]):
-                    warns.append(f"12s({c})")
-
-        if "13s" in active_rules:
-            for c in ctrl_cols:
-                if _rule_13s(ctrl_vals[c]):
-                    rejs.append(f"13s({c})")
-
-        if "22s" in active_rules:
-            if len(ctrl_cols) >= 2:
-                z1 = ctrl_vals[ctrl_cols[0]]
-                z2 = ctrl_vals[ctrl_cols[1]]
-                if _rule_22s(z1, z2):
-                    rejs.append("22s(Ctrl1&2)")
-            else:
-                # single level: check consecutive in same control
-                c = ctrl_cols[0]
-                if len(z_hist[c]) >= 2 and _rule_22s(z_hist[c][-2], z_hist[c][-1]):
-                    rejs.append(f"22s({c} consecutive)")
-
-        if "R4s" in active_rules and len(ctrl_cols) >= 2:
-            z1 = ctrl_vals[ctrl_cols[0]]
-            z2 = ctrl_vals[ctrl_cols[1]]
-            if _rule_r4s(z1, z2):
-                rejs.append("R4s(Ctrl1&2)")
-
-        if "41s" in active_rules:
-            for c in ctrl_cols:
-                if _rule_41s(z_hist[c]):
-                    rejs.append(f"41s({c})")
-
-        if "10x" in active_rules:
-            for c in ctrl_cols:
-                if _rule_10x(z_hist[c]):
-                    rejs.append(f"10x({c})")
-
-        status = "In Control"
-        if rejs:
-            status = "Out of Control"
-        elif warns:
-            status = "Warning"
-
-        summary_rows.append(
-            {
-                "Ngày/Lần": run,
-                "Status": status,
-                "Rejection rules": "; ".join(rejs),
-                "Warning rules": "; ".join(warns),
-            }
+    with c1:
+        st.markdown(
+            f"""
+            <div class="qc-card">
+              <div class="qc-card-title">🧫 Xét nghiệm</div>
+              <div class="qc-card-value">{cfg['test_name'] or "Chưa nhập"}</div>
+              <div class="qc-card-sub">
+                Đơn vị: {cfg['unit'] or "—"}<br/>
+                QC: {(cfg['qc_name'] + " • LOT " + cfg['qc_lot']) if (cfg['qc_name'] or cfg['qc_lot']) else "—"}
+              </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
         )
 
-        # point-level status
-        for l, c in enumerate(ctrl_cols):
-            p_status = "OK"
-            if any(c in msg for msg in rejs):
-                p_status = "REJ"
-            elif any(c in msg for msg in warns):
-                p_status = "WARN"
+    with c2:
+        st.markdown(
+            f"""
+            <div class="qc-card">
+              <div class="qc-card-title">🔬 Thiết bị & Phương pháp</div>
+              <div class="qc-card-value">{cfg['device'] or "Chưa nhập"}</div>
+              <div class="qc-card-sub">
+                Phương pháp: {cfg['method'] or "—"}<br/>
+                Hạn dùng QC: {cfg['qc_expiry'] or "—"}
+              </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
+    if active_rules:
+        chips = "".join(
+            f"<span class='qc-rule-chip'>{r}</span>" for r in sorted(active_rules)
+        )
+        rules_html = f"<div class='qc-rule-tag'>{chips}</div>"
+    else:
+        rules_html = "<span style='font-size:0.8rem;color:#d1d5db;'>Chưa có quy tắc</span>"
+
+    with c3:
+        st.markdown(
+            f"""
+            <div class="qc-card qc-card-ghost">
+              <div class="qc-card-title">📐 Nhóm sigma & Quy tắc</div>
+              <div class="qc-card-value">{cfg['sigma_value']:.2f} σ → {sigma_cat}-sigma</div>
+              <div class="qc-card-sub">
+                Bộ quy tắc loại bỏ áp dụng:
+              </div>
+              {rules_html}
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+
+# =====================================================
+# HÀM TÍNH TOÁN
+# =====================================================
+
+
+def compute_stats(values):
+    arr = np.array([v for v in values if v not in (None, "")])
+    arr = arr.astype(float) if arr.size > 0 else arr
+
+    if arr.size == 0:
+        return np.nan, np.nan, np.nan
+
+    mean = float(arr.mean())
+    sd = float(arr.std(ddof=1)) if arr.size > 1 else np.nan
+    cv = float(sd / mean * 100) if (mean != 0 and not np.isnan(sd)) else np.nan
+    return mean, sd, cv
+
+
+def compute_zscore(value, mean, sd):
+    try:
+        v = float(value)
+        if sd is None or sd == 0 or np.isnan(sd):
+            return np.nan
+        return (v - mean) / sd
+    except Exception:
+        return np.nan
+
+
+def extract_rule_short(text):
+    if not isinstance(text, str) or not text.strip():
+        return ""
+    codes = []
+    for part in text.split(";"):
+        part = part.strip()
+        if not part:
+            continue
+        token = part.split()[0]
+        if token not in codes:
+            codes.append(token)
+    return ", ".join(codes)
+
+
+def create_levey_jennings_chart(df_long, title):
+    if df_long.empty:
+        return None
+
+    df = df_long.copy()
+    df["z_clip"] = df["z_score"].clip(-3, 3)
+    df["shape"] = np.where(df["z_score"].abs() > 3, "square", "circle")
+
+    base = alt.Chart(df).encode(
+        x=alt.X("Run:O", title="Ngày / Lần"),
+        y=alt.Y("z_clip:Q", title="Z-score"),
+    )
+
+    lines = base.mark_line().encode(
+        color=alt.Color("Control:N", title="Mức QC"),
+        detail="Control:N",
+    )
+
+    points = base.mark_point(filled=True, size=70).encode(
+        color=alt.Color("Control:N", title="Mức QC"),
+        shape=alt.Shape("shape:N", legend=None),
+        tooltip=[
+            "Run",
+            "Control",
+            alt.Tooltip("z_score:Q", format=".4f", title="z-score"),
+            "point_status",
+            "rule_codes",
+        ],
+    )
+
+    rules_data = pd.DataFrame(
+        {
+            "y": [0, 1, -1, 2, -2, 3, -3],
+            "label": ["0", "+1 SD", "-1 SD", "+2 SD", "-2 SD", "+3 SD", "-3 SD"],
+            "color": ["black", "green", "green", "orange", "orange", "red", "red"],
+        }
+    )
+
+    rules = alt.Chart(rules_data).mark_rule().encode(
+        y="y:Q",
+        color=alt.Color("color:N", scale=None, legend=None),
+    )
+
+    text_labels = alt.Chart(rules_data).mark_text(align="left", dx=3, dy=-3).encode(
+        y="y:Q",
+        text="label:N",
+        color=alt.Color("color:N", scale=None, legend=None),
+    )
+
+    ext_rules_data = pd.DataFrame({"y": [3.5, -3.5]})
+    ext_rules = alt.Chart(ext_rules_data).mark_rule(
+        strokeDash=[4, 4], color="black"
+    ).encode(y="y:Q")
+
+    viol_points = base.transform_filter(
+        "datum.point_status != 'Đạt'"
+    ).mark_point(filled=False, strokeWidth=2).encode(
+        color=alt.value("red"),
+        shape=alt.Shape("shape:N", legend=None),
+        size=alt.value(200),
+    )
+
+    viol_text = base.transform_filter(
+        "datum.point_status != 'Đạt'"
+    ).mark_text(dy=-12, color="red").encode(text="rule_short:N")
+
+    t = get_theme()
+    chart = (
+        rules + text_labels + ext_rules + lines + points + viol_points + viol_text
+    ).properties(title=title, height=400, background=t.get("chartBg", "#FFFDF7"))
+
+    chart = (
+        chart
+        .configure_view(stroke=None)
+        .configure_axis(
+            grid=True,
+            gridColor=t.get("grid", "rgba(58, 46, 31, 0.18)"),
+            domainColor=t.get("grid", "rgba(58, 46, 31, 0.18)"),
+            labelColor=t.get("text2", "#6B5A44"),
+            titleColor=t.get("text", "#3A2E1F"),
+        )
+        .configure_title(color=t.get("text", "#3A2E1F"), fontSize=14)
+        .configure_legend(labelColor=t.get("text", "#3A2E1F"), titleColor=t.get("text", "#3A2E1F"))
+    )
+
+    return chart
+
+
+def get_sigma_category_and_rules(sigma, num_levels):
+    if sigma is None or (isinstance(sigma, float) and math.isnan(sigma)) or sigma == 0:
+        cat = "<4"
+    else:
+        if sigma >= 6:
+            cat = "6"
+        elif sigma >= 5:
+            cat = "5"
+        elif sigma >= 4:
+            cat = "4"
+        else:
+            cat = "<4"
+
+    rules = {"1_3s"}  # luôn có 1_3s
+
+    if num_levels == 2:
+        if cat == "6":
+            pass
+        elif cat == "5":
+            rules.update(["R_4s", "2_2s"])
+        elif cat == "4":
+            rules.update(["R_4s", "2_2s", "4_1s"])
+        else:
+            rules.update(["R_4s", "2_2s", "4_1s", "10x"])
+    else:
+        if cat == "6":
+            pass
+        elif cat == "5":
+            rules.update(["R_4s", "2of3_2s"])
+        elif cat == "4":
+            rules.update(["R_4s", "2of3_2s", "3_1s"])
+        else:
+            rules.update(["R_4s", "2of3_2s", "3_1s", "9x"])
+
+    return cat, rules
+
+
+def evaluate_westgard(z_df, num_levels, sigma):
+    runs = z_df["Ngày/Lần"].tolist()
+    z_cols = [c for c in z_df.columns if c.startswith("z_Ctrl")]
+    z_cols = sorted(z_cols, key=lambda x: int(x.split("Ctrl ")[1]))
+    Z = z_df[z_cols].to_numpy(dtype=float)
+    n_runs, n_levels = Z.shape
+
+    sigma_cat, active_rules = get_sigma_category_and_rules(sigma, num_levels)
+
+    warn_by_run = [set() for _ in range(n_runs)]
+    rej_by_run = [set() for _ in range(n_runs)]
+    warn_point = [[set() for _ in range(n_levels)] for _ in range(n_runs)]
+    rej_point = [[set() for _ in range(n_levels)] for _ in range(n_runs)]
+
+    def add_warn(i, msg, levels=None):
+        warn_by_run[i].add(msg)
+        if levels is not None:
+            for l in levels:
+                warn_point[i][l].add(msg)
+
+    def add_rej(i, msg, levels=None):
+        rej_by_run[i].add(msg)
+        if levels is not None:
+            for l in levels:
+                rej_point[i][l].add(msg)
+
+    # 1_2s
+    for i in range(n_runs):
+        for l in range(n_levels):
+            z = Z[i, l]
+            if np.isnan(z):
+                continue
+            if 2 <= abs(z) < 3:
+                msg = f"1_2s (Ctrl {l+1}, z={z:.2f})"
+                add_warn(i, msg, levels=[l])
+
+    # 1_3s
+    if "1_3s" in active_rules:
+        for i in range(n_runs):
+            for l in range(n_levels):
+                z = Z[i, l]
+                if np.isnan(z):
+                    continue
+                if abs(z) >= 3:
+                    msg = f"1_3s (Ctrl {l+1}, z={z:.2f})"
+                    add_rej(i, msg, levels=[l])
+
+    # 2_2s
+    if "2_2s" in active_rules:
+        # cùng lần chạy, 2 mức khác nhau
+        for i in range(n_runs):
+            idxs = []
+            signs = []
+            for l in range(n_levels):
+                z = Z[i, l]
+                if np.isnan(z):
+                    continue
+                if 2 <= abs(z) < 3:
+                    idxs.append(l)
+                    signs.append(np.sign(z) or 1)
+            for s in (+1, -1):
+                levels = [l for l, sgn in zip(idxs, signs) if sgn == s]
+                if len(levels) >= 2:
+                    msg = (
+                        "2_2s (cùng lần chạy, "
+                        + ", ".join(f"Ctrl {l+1}" for l in levels)
+                        + " cùng phía 2–3SD)"
+                    )
+                    add_rej(i, msg, levels=levels)
+
+        # cùng mức, 2 lần liên tiếp
+        for l in range(n_levels):
+            for i in range(1, n_runs):
+                z1, z2 = Z[i - 1, l], Z[i, l]
+                if any(np.isnan([z1, z2])):
+                    continue
+                if (
+                    2 <= abs(z1) < 3
+                    and 2 <= abs(z2) < 3
+                    and np.sign(z1) == np.sign(z2)
+                ):
+                    msg = f"2_2s (Ctrl {l+1}, runs {runs[i-1]}–{runs[i]})"
+                    add_rej(i, msg, levels=[l])
+
+    # 2/3_2s
+    if "2of3_2s" in active_rules:
+        # cùng mức, 3 lần liên tiếp
+        for l in range(n_levels):
+            for i in range(2, n_runs):
+                window_idx = [i - 2, i - 1, i]
+                vals = [Z[j, l] for j in window_idx]
+                if all(np.isnan(v) for v in vals):
+                    continue
+                for s in (+1, -1):
+                    cnt = sum(
+                        (not np.isnan(v)) and abs(v) >= 2 and np.sign(v) == s
+                        for v in vals
+                    )
+                    if cnt >= 2:
+                        msg = f"2/3_2s (Ctrl {l+1}, runs {runs[i-2]}–{runs[i]})"
+                        add_rej(i, msg, levels=[l])
+                        break
+
+        # cùng lần chạy, nhiều mức
+        for i in range(n_runs):
+            vals = [Z[i, l] for l in range(n_levels)]
+            for s in (+1, -1):
+                levels = [
+                    l
+                    for l, v in enumerate(vals)
+                    if (not np.isnan(v)) and abs(v) >= 2 and np.sign(v) == s
+                ]
+                if len(levels) >= 2:
+                    msg = f"2/3_2s (run {runs[i]}, ≥2 mức QC cùng phía ≥2SD)"
+                    add_rej(i, msg, levels=levels)
+                    break
+
+    # R_4s
+    if "R_4s" in active_rules:
+        for i in range(n_runs):
+            vals = [Z[i, l] for l in range(n_levels) if not np.isnan(Z[i, l])]
+            if len(vals) < 2:
+                continue
+            maxz = max(vals)
+            minz = min(vals)
+            if (maxz - minz) >= 4 and maxz >= 2 and minz <= -2:
+                levels = []
+                for l in range(n_levels):
+                    if np.isnan(Z[i, l]):
+                        continue
+                    if Z[i, l] == maxz or Z[i, l] == minz:
+                        levels.append(l)
+                msg = f"R_4s (run {runs[i]}, chênh lệch ≥4SD giữa các mức QC)"
+                add_rej(i, msg, levels=levels)
+
+    # 3_1s
+    if "3_1s" in active_rules:
+        for l in range(n_levels):
+            for i in range(2, n_runs):
+                window_idx = [i - 2, i - 1, i]
+                vals = [Z[j, l] for j in window_idx]
+                if any(np.isnan(v) for v in vals):
+                    continue
+                for s in (+1, -1):
+                    if all(abs(v) >= 1 and np.sign(v) == s for v in vals):
+                        msg = f"3_1s (Ctrl {l+1}, runs {runs[i-2]}–{runs[i]})"
+                        add_rej(i, msg, levels=[l])
+                        break
+
+        if n_levels >= 3:
+            for i in range(n_runs):
+                vals = [Z[i, l] for l in range(n_levels)]
+                if any(np.isnan(v) for v in vals):
+                    continue
+                for s in (+1, -1):
+                    levels = [
+                        l for l, v in enumerate(vals) if abs(v) >= 1 and np.sign(v) == s
+                    ]
+                    if len(levels) >= 3:
+                        msg = f"3_1s (run {runs[i]}, ≥3 mức QC cùng phía ≥1SD)"
+                        add_rej(i, msg, levels=levels)
+                        break
+
+    # 4_1s
+    if "4_1s" in active_rules:
+        for l in range(n_levels):
+            for i in range(3, n_runs):
+                window_idx = [i - 3, i - 2, i - 1, i]
+                vals = [Z[j, l] for j in window_idx]
+                if any(np.isnan(v) for v in vals):
+                    continue
+                for s in (+1, -1):
+                    if all(abs(v) >= 1 and np.sign(v) == s for v in vals):
+                        msg = f"4_1s (Ctrl {l+1}, runs {runs[i-3]}–{runs[i]})"
+                        add_rej(i, msg, levels=[l])
+                        break
+
+        if n_levels == 2:
+            for i in range(1, n_runs):
+                idxs = [i - 1, i]
+                vals = [Z[j, l] for j in idxs for l in range(n_levels)]
+                if any(np.isnan(v) for v in vals):
+                    continue
+                for s in (+1, -1):
+                    if all(abs(v) >= 1 and np.sign(v) == s for v in vals):
+                        msg = "4_1s (2 lần chạy x 2 mức QC, tất cả cùng phía ≥1SD)"
+                        add_rej(i, msg, levels=[0, 1])
+                        break
+
+    # 9x
+    if "9x" in active_rules:
+        for l in range(n_levels):
+            for i in range(8, n_runs):
+                window_idx = list(range(i - 8, i + 1))
+                vals = [Z[j, l] for j in window_idx]
+                if any(np.isnan(v) for v in vals):
+                    continue
+                for s in (+1, -1):
+                    if all(np.sign(v) == s for v in vals):
+                        msg = f"9x (Ctrl {l+1}, 9 kết quả liên tiếp cùng phía)"
+                        add_rej(i, msg, levels=[l])
+                        break
+
+        if n_levels == 3:
+            for i in range(2, n_runs):
+                window_idx = [i - 2, i - 1, i]
+                vals = [Z[j, l] for j in window_idx for l in range(n_levels)]
+                if any(np.isnan(v) for v in vals):
+                    continue
+                for s in (+1, -1):
+                    if all(np.sign(v) == s for v in vals):
+                        msg = "9x (3 lần chạy x 3 mức QC, tất cả cùng phía)"
+                        add_rej(i, msg, levels=[0, 1, 2])
+                        break
+
+    # 10x
+    if "10x" in active_rules and n_levels == 2:
+        for l in range(n_levels):
+            for i in range(9, n_runs):
+                window_idx = list(range(i - 9, i + 1))
+                vals = [Z[j, l] for j in window_idx]
+                if any(np.isnan(v) for v in vals):
+                    continue
+                for s in (+1, -1):
+                    if all(np.sign(v) == s for v in vals):
+                        msg = f"10x (Ctrl {l+1}, 10 kết quả liên tiếp cùng phía)"
+                        add_rej(i, msg, levels=[l])
+                        break
+
+        for i in range(4, n_runs):
+            window_idx = list(range(i - 4, i + 1))
+            vals = [Z[j, l] for j in window_idx for l in range(n_levels)]
+            if any(np.isnan(v) for v in vals):
+                continue
+            for s in (+1, -1):
+                if all(np.sign(v) == s for v in vals):
+                    msg = "10x (5 lần chạy x 2 mức QC, tất cả cùng phía)"
+                    add_rej(i, msg, levels=[0, 1])
+                    break
+
+    # Tổng hợp theo run
+    rows = []
+    for i, run in enumerate(runs):
+        warns = sorted(warn_by_run[i])
+        rejs = sorted(rej_by_run[i])
+        if rejs:
+            status = "Không đạt (Reject QC)"
+        elif warns:
+            status = "Cảnh báo (1_2s)"
+        else:
+            status = "Đạt"
+        all_msgs = rejs + warns
+        rows.append(
+            {
+                "Ngày/Lần": run,
+                "Trạng thái": status,
+                "Vi phạm loại bỏ": "; ".join(all_msgs),
+                "Người thực hiện": "",
+            }
+        )
+    summary_df = pd.DataFrame(rows)
+
+    # Tổng hợp theo điểm
+    point_rows = []
+    for i, run in enumerate(runs):
+        for l in range(n_levels):
+            warns = sorted(warn_point[i][l])
+            rejs = sorted(rej_point[i][l])
+            if rejs:
+                p_status = "Không đạt (Reject QC)"
+            elif warns:
+                p_status = "Cảnh báo (1_2s)"
+            else:
+                p_status = "Đạt"
             all_msgs = rejs + warns
             point_rows.append(
                 {
                     "Ngày/Lần": run,
-                    "Control": c,
+                    "Control": f"Ctrl {l+1}",
                     "point_status": p_status,
                     "rule_codes": "; ".join(all_msgs),
                 }
             )
-
-    summary_df = pd.DataFrame(summary_rows)
     point_df = pd.DataFrame(point_rows)
-    return summary_df, point_df
 
-
-# =====================================================
-# LEVEY-JENNINGS CHART (FULL — from original file)
-# =====================================================
-
-def create_levey_jennings_chart(
-    daily_df: pd.DataFrame,
-    mean: float,
-    sd: float,
-    title: str = "Levey–Jennings",
-):
-    """
-    Create LJ chart in Altair.
-    daily_df expects columns: ['Ngày/Lần', 'Ctrl 1', 'Ctrl 2', ...] or similar
-    """
-    if daily_df is None or not isinstance(daily_df, pd.DataFrame) or daily_df.empty:
-        return None
-
-    df = daily_df.copy()
-    df.columns = [str(c) for c in df.columns]
-
-    if "Ngày/Lần" in df.columns:
-        run_col = "Ngày/Lần"
-    elif "Run" in df.columns:
-        run_col = "Run"
-    else:
-        run_col = df.columns[0]
-
-    ctrl_cols = [c for c in df.columns if c.lower().startswith("ctrl")]
-    if not ctrl_cols:
-        return None
-
-    # melt
-    melt = df.melt(id_vars=[run_col], value_vars=ctrl_cols, var_name="Control", value_name="Value")
-    melt = melt.dropna(subset=["Value"])
-    melt["Value"] = melt["Value"].astype(float)
-
-    # baseline lines
-    base = pd.DataFrame(
-        {
-            "y": [
-                mean,
-                mean + 1 * sd,
-                mean - 1 * sd,
-                mean + 2 * sd,
-                mean - 2 * sd,
-                mean + 3 * sd,
-                mean - 3 * sd,
-                mean + 3.5 * sd,
-                mean - 3.5 * sd,
-            ],
-            "label": ["Mean", "+1SD", "-1SD", "+2SD", "-2SD", "+3SD", "-3SD", "+3.5SD", "-3.5SD"],
-        }
-    )
-
-    x = alt.X(f"{run_col}:O", title="Ngày/Lần", sort=None)
-    y = alt.Y("Value:Q", title="Giá trị", scale=alt.Scale(zero=False))
-
-    line = (
-        alt.Chart(melt)
-        .mark_line(point=True)
-        .encode(x=x, y=y, color="Control:N", tooltip=[run_col, "Control", "Value"])
-        .properties(height=360, title=title)
-    )
-
-    mean_line = (
-        alt.Chart(pd.DataFrame({run_col: df[run_col].astype(str), "y": mean}))
-        .mark_line(strokeDash=[6, 4])
-        .encode(x=x, y=alt.Y("y:Q"))
-    )
-
-    # SD lines (±1, ±2, ±3 solid) and ±3.5 dashed black
-    sd_lines = []
-    for k, dash, color in [
-        (1, [2, 0], None),
-        (2, [2, 0], None),
-        (3, [2, 0], None),
-    ]:
-        for sign in [1, -1]:
-            yv = mean + sign * k * sd
-            sd_lines.append(
-                alt.Chart(pd.DataFrame({run_col: df[run_col].astype(str), "y": yv}))
-                .mark_line(opacity=0.6, strokeDash=dash)
-                .encode(x=x, y="y:Q")
-            )
-
-    for sign in [1, -1]:
-        yv = mean + sign * 3.5 * sd
-        sd_lines.append(
-            alt.Chart(pd.DataFrame({run_col: df[run_col].astype(str), "y": yv}))
-            .mark_line(color="black", strokeDash=[6, 4], opacity=0.8)
-            .encode(x=x, y="y:Q")
-        )
-
-    chart = line + mean_line
-    for l in sd_lines:
-        chart = chart + l
-    return chart
-
-
-# =====================================================
-# CURRENT ANALYTE HELPERS USED BY APP.PY
-# =====================================================
-
-def get_current_analyte_key():
-    _init_multi_analyte_store()
-    return st.session_state.get("active_analyte", "Xét nghiệm 1")
-
-
-def get_current_analyte_config():
-    cur = get_current_analyte_state()
-    return cur.get("config", {})
-
-
-# =====================================================
-# HOME DASHBOARD HELPERS (USED BY APP.PY)
-# =====================================================
-
-def render_global_header_and_login_landing():
-    """
-    Helper for layout A:
-    Hero on top, login section under hero (when not logged in).
-    """
-    render_global_header()
-    render_login_section()
-
-
-def get_current_analyte_state_safe():
-    try:
-        return get_current_analyte_state()
-    except Exception:
-        return {}
-
-
-def get_current_analyte_summary():
-    cur_state = get_current_analyte_state_safe()
-    return cur_state.get("summary_df"), cur_state.get("qc_stats"), cur_state.get("daily_df")
-
-
-# =====================================================
-# EXTRA: compatibility exports (pages may still call qc.require_login)
-# =====================================================
-# require_login is imported from auth.py already (above)
+    return sigma_cat, active_rules, summary_df, point_df
