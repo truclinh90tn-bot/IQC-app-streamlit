@@ -22,7 +22,7 @@ with st.sidebar:
     user = st.session_state.get("auth_user", "")
     role = st.session_state.get("auth_role", "")
     lab_id = st.session_state.get("auth_lab_id", "")
-    st.caption(f"**User:** `{user}`  
+    st.caption(f"**User:** `{user}`")  
 **Role:** `{role}`  
 **PXN:** `{lab_id}`")
     if st.button("🚪 Đăng xuất", use_container_width=True):
