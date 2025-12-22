@@ -1,187 +1,101 @@
-/* =========================================================
-   IQC APP â€“ GLOBAL THEME (Premium / Gold / Clean)
-   - Fix: khĂ´i phá»¥c hero banner Ä‘Ăºng tone beâ€“gold nhÆ° báº£n gá»‘c
-   - Fix: sidebar dark navy sang, cĂ³ tuá»³ chá»n áº©n chá»¯/nav khi chÆ°a login
-   ========================================================= */
+/* ===============================
+   PREMIUM GOLD THEME – IQC
+   =============================== */
 
 :root {
-  --qc-bg: #fbfbfd;
-  --qc-panel: #ffffff;
-
-  --qc-gold: #b88a2b;
-  --qc-gold-hover: #a97a1f;
-  --qc-gold-soft: rgba(184, 138, 43, 0.18);
-
-  --qc-text: #1f2937;
-  --qc-muted: #6b7280;
-
-  --qc-shadow: 0 18px 45px rgba(15, 23, 42, 0.12);
-  --qc-shadow-strong: 0 24px 70px rgba(15, 23, 42, 0.18);
-
-  --qc-sidebar-1: #0b1020;
-  --qc-sidebar-2: #0f1a36;
-  --qc-sidebar-border: rgba(255, 255, 255, 0.09);
+  --gold-main: #c9a24d;
+  --gold-soft: #f6f1e7;
+  --gold-border: #e6d3a3;
+  --dark-bg: #0b1324;
+  --dark-bg-2: #101a30;
 }
 
-/* ---------- APP BACKGROUND ---------- */
-html, body, [data-testid="stAppViewContainer"] {
-  background: radial-gradient(1200px 600px at 12% 12%, rgba(184, 138, 43, 0.08), transparent 60%),
-              var(--qc-bg);
-  color: var(--qc-text);
+/* App background */
+.stApp {
+  background-color: #fafafa;
 }
 
-/* ---------- HIDE STREAMLIT DEFAULT HEADER FOOTER ---------- */
-header[data-testid="stHeader"],
-footer {
-  visibility: hidden;
-  height: 0;
-}
-
-/* ---------- SIDEBAR (giá»¯ tone mĂ u ká»ƒ cáº£ khi chÆ°a login) ---------- */
+/* ===============================
+   SIDEBAR
+   =============================== */
 section[data-testid="stSidebar"] {
-  background: radial-gradient(900px 520px at 0% 0%, rgba(184, 138, 43, 0.10), transparent 55%),
-              linear-gradient(180deg, var(--qc-sidebar-2) 0%, var(--qc-sidebar-1) 100%) !important;
-  border-right: 1px solid var(--qc-sidebar-border) !important;
+  background: linear-gradient(180deg, var(--dark-bg), var(--dark-bg-2));
 }
 
+/* Sidebar text (ẩn khi chưa login – xử lý bằng Python) */
 section[data-testid="stSidebar"] * {
-  color: #e5e7eb;
+  color: #eaeaea;
 }
 
-/* NĂºt collapse "<<" */
-section[data-testid="stSidebar"] button[kind="header"] {
-  color: #e5e7eb !important;
+/* ===============================
+   HERO BANNER
+   =============================== */
+.hero-container {
+  background: linear-gradient(
+    120deg,
+    #fffaf0,
+    var(--gold-soft)
+  );
+  border: 2px solid var(--gold-border);
+  border-radius: 28px;
+  padding: 32px 36px;
+  margin-bottom: 28px;
+  box-shadow: 0 18px 40px rgba(180, 140, 40, 0.18);
 }
 
-/* Nav item */
-div[data-testid="stSidebarNav"] a,
-div[data-testid="stSidebarNav"] button {
-  border-radius: 12px !important;
+.hero-title {
+  font-size: 38px;
+  font-weight: 800;
+  color: #1f2937;
+  letter-spacing: 0.5px;
 }
 
-div[data-testid="stSidebarNav"] a:hover,
-div[data-testid="stSidebarNav"] button:hover {
-  background: rgba(255, 255, 255, 0.06) !important;
+.hero-sub {
+  font-size: 16px;
+  margin-top: 10px;
+  color: #374151;
 }
 
-div[data-testid="stSidebarNav"] a[aria-current="page"],
-div[data-testid="stSidebarNav"] a[aria-selected="true"],
-div[data-testid="stSidebarNav"] button[aria-current="page"],
-div[data-testid="stSidebarNav"] button[aria-selected="true"] {
-  background: rgba(184, 138, 43, 0.18) !important;
-  box-shadow: 0 0 0 1px rgba(184, 138, 43, 0.35) inset !important;
+/* ===============================
+   LOGIN CARD
+   =============================== */
+.login-card {
+  max-width: 520px;
+  margin: 24px auto 40px auto;
+  background: #fffdf8;
+  border-radius: 22px;
+  padding: 28px 30px;
+  border: 2px solid var(--gold-border);
+  box-shadow: 0 12px 30px rgba(180, 140, 40, 0.15);
 }
 
-/* ---------- OPTIONAL: áº¨N chá»¯/nav sidebar khi CHÆ¯A login ----------
-   CĂ¡ch dĂ¹ng:
-   - Khi chÆ°a login, qc_core/app inject thĂªm <style> gá»i cĂ¡c class nĂ y
-   - Hoáº·c Ä‘á»ƒ máº·c Ä‘á»‹nh: hide nav (an toĂ n), vĂ  sau login inject CSS báº­t láº¡i
-*/
-
-/* áº¨n toĂ n bá»™ navigation (khĂ´ng cĂ²n chá»¯) */
-.qc-hide-sidebar-nav section[data-testid="stSidebar"] div[data-testid="stSidebarNav"] {
-  display: none !important;
+.login-title {
+  font-size: 22px;
+  font-weight: 700;
+  margin-bottom: 6px;
 }
 
-/* áº¨n chá»¯ nhÆ°ng giá»¯ khá»‘i nav (náº¿u chá»‹ muá»‘n chá»‰ cĂ²n icon/collapse) */
-.qc-hide-sidebar-text section[data-testid="stSidebar"] div[data-testid="stSidebarNav"] * {
-  color: transparent !important;
-}
-
-/* ---------- MAIN CONTENT CONTAINER ---------- */
-[data-testid="stMainBlockContainer"] {
-  max-width: 1220px;
-  padding-top: 1.2rem;
-  padding-bottom: 3rem;
-}
-
-/* ---------- HERO BANNER (khĂ´i phá»¥c tone beâ€“gold) ---------- */
-.qc-hero {
-  background: radial-gradient(700px 420px at 18% 10%, rgba(184, 138, 43, 0.14), transparent 60%),
-              linear-gradient(90deg, #f6f0e6 0%, #fbf7f0 55%, #f2ece2 100%);
-  border: 2px solid rgba(184, 138, 43, 0.55);
-  border-radius: 26px;
-  box-shadow: var(--qc-shadow);
-  padding: 22px 26px;
-}
-
-.qc-hero .qc-hero-chip {
-  display: inline-flex;
-  gap: 8px;
-  align-items: center;
-  padding: 8px 14px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.65);
-  border: 1px solid rgba(184, 138, 43, 0.30);
-  color: #4b5563;
-  font-weight: 600;
-}
-
-.qc-hero h1, .qc-hero h2 {
-  color: #2b2b2b;
-  letter-spacing: 0.3px;
-}
-
-.qc-hero p {
+.login-desc {
+  font-size: 14px;
   color: #4b5563;
 }
 
-.qc-hero .qc-hero-media {
-  border-radius: 18px;
-  overflow: hidden;
-  border: 1px solid rgba(184, 138, 43, 0.35);
-  box-shadow: 0 14px 36px rgba(15, 23, 42, 0.16);
-}
-
-/* ---------- CARDS / PANELS ---------- */
-.qc-card {
-  background: rgba(255, 255, 255, 0.96);
-  border: 1px solid rgba(184, 138, 43, 0.22);
-  border-radius: 18px;
-  box-shadow: 0 12px 34px rgba(15, 23, 42, 0.10);
-}
-
-/* ---------- BUTTONS ---------- */
+/* ===============================
+   BUTTON
+   =============================== */
 .stButton > button {
-  border-radius: 14px !important;
-  font-weight: 700 !important;
-  border: 1px solid rgba(184, 138, 43, 0.35) !important;
+  background: linear-gradient(
+    135deg,
+    #d4af37,
+    #b8922e
+  );
+  color: white;
+  border-radius: 14px;
+  border: none;
+  height: 48px;
+  font-weight: 700;
 }
 
-.stButton > button:focus {
-  box-shadow: 0 0 0 3px rgba(184, 138, 43, 0.22) !important;
-}
-
-.stButton > button[data-testid="baseButton-primary"],
-.stButton > button[kind="primary"] {
-  background: linear-gradient(180deg, var(--qc-gold) 0%, var(--qc-gold-hover) 100%) !important;
-  color: #fff !important;
-}
-
-.stButton > button[data-testid="baseButton-secondary"],
-.stButton > button[kind="secondary"] {
-  background: rgba(255, 255, 255, 0.95) !important;
-  color: #111827 !important;
-}
-
-/* ---------- INPUTS ---------- */
-.stTextInput input,
-.stNumberInput input,
-.stSelectbox div,
-.stDateInput input {
-  border-radius: 14px !important;
-  border: 1px solid rgba(184, 138, 43, 0.25) !important;
-}
-
-/* ---------- LOGIN AREA WIDTH (Ä‘á»ƒ 3 Ă´ nháº­p gá»n) ---------- */
-.qc-login-wrap {
-  max-width: 420px;
-  margin: 0 auto;
-}
-
-/* ---------- TABLES ---------- */
-[data-testid="stDataFrame"] {
-  border-radius: 16px;
-  overflow: hidden;
-  border: 1px solid rgba(15, 23, 42, 0.12);
+.stButton > button:hover {
+  opacity: 0.92;
 }
