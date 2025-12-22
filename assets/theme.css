@@ -1,101 +1,180 @@
-/* ===============================
-   PREMIUM GOLD THEME – IQC
-   =============================== */
+/* =========================================================
+   IQC APP â€“ GLOBAL THEME (Luxury / Gold / Clean)
+   ========================================================= */
 
+/* ---------- ROOT VARIABLES ---------- */
 :root {
-  --gold-main: #c9a24d;
-  --gold-soft: #f6f1e7;
-  --gold-border: #e6d3a3;
-  --dark-bg: #0b1324;
-  --dark-bg-2: #101a30;
+  --qc-bg: #F7F9FC;
+  --qc-panel: #FFFFFF;
+  --qc-panel-dark: #F2F4F8;
+
+  --qc-gold: #B88A2B;
+  --qc-gold-hover: #A97A1F;
+  --qc-gold-soft: rgba(184, 138, 43, 0.18);
+
+  --qc-text: #1F2937;
+  --qc-text2: #6B7280;
+
+  --qc-border: rgba(185, 150, 60, 0.35);
+  --qc-card-strong: #FFFFFF;
+
+  --qc-shadow: rgba(15, 23, 42, 0.14);
+  --qc-shadow-strong: rgba(15, 23, 42, 0.20);
+
+  --qc-error: #A94442;
+  --qc-warning: #C28F2C;
 }
 
-/* App background */
-.stApp {
-  background-color: #fafafa;
+/* ---------- BASE ---------- */
+html, body, [class*="stApp"] {
+  background-color: var(--qc-bg);
+  color: var(--qc-text);
+  font-family: "Inter", "Segoe UI", sans-serif;
 }
 
-/* ===============================
-   SIDEBAR
-   =============================== */
-section[data-testid="stSidebar"] {
-  background: linear-gradient(180deg, var(--dark-bg), var(--dark-bg-2));
-}
-
-/* Sidebar text (ẩn khi chưa login – xử lý bằng Python) */
-section[data-testid="stSidebar"] * {
-  color: #eaeaea;
-}
-
-/* ===============================
-   HERO BANNER
-   =============================== */
-.hero-container {
+/* ---------- HERO HEADER ---------- */
+.qc-hero {
   background: linear-gradient(
-    120deg,
-    #fffaf0,
-    var(--gold-soft)
-  );
-  border: 2px solid var(--gold-border);
-  border-radius: 28px;
-  padding: 32px 36px;
-  margin-bottom: 28px;
-  box-shadow: 0 18px 40px rgba(180, 140, 40, 0.18);
-}
-
-.hero-title {
-  font-size: 38px;
-  font-weight: 800;
-  color: #1f2937;
-  letter-spacing: 0.5px;
-}
-
-.hero-sub {
-  font-size: 16px;
-  margin-top: 10px;
-  color: #374151;
-}
-
-/* ===============================
-   LOGIN CARD
-   =============================== */
-.login-card {
-  max-width: 520px;
-  margin: 24px auto 40px auto;
-  background: #fffdf8;
+      120deg,
+      rgba(184,138,43,0.25),
+      rgba(184,138,43,0.05)
+    ),
+    #0F172A;
   border-radius: 22px;
-  padding: 28px 30px;
-  border: 2px solid var(--gold-border);
-  box-shadow: 0 12px 30px rgba(180, 140, 40, 0.15);
+  padding: 28px 36px;
+  margin-bottom: 22px;
+  box-shadow: 0 18px 40px var(--qc-shadow-strong);
 }
 
-.login-title {
-  font-size: 22px;
-  font-weight: 700;
-  margin-bottom: 6px;
+.qc-hero h1,
+.qc-hero h2,
+.qc-hero h3 {
+  color: #FFFFFF;
 }
 
-.login-desc {
-  font-size: 14px;
-  color: #4b5563;
+.qc-hero p {
+  color: rgba(255,255,255,0.8);
 }
 
-/* ===============================
-   BUTTON
-   =============================== */
+/* ---------- LOGIN CARD ---------- */
+.login-card {
+  max-width: 420px;
+  margin: 28px auto;
+  padding: 26px 28px;
+  border-radius: 18px;
+  background: rgba(255,255,255,0.92);
+  box-shadow: 0 20px 40px var(--qc-shadow);
+  border: 1px solid var(--qc-border);
+  backdrop-filter: blur(6px);
+}
+
+.login-card h3 {
+  text-align: center;
+  margin-bottom: 18px;
+  color: var(--qc-text);
+}
+
+/* ---------- BUTTONS ---------- */
 .stButton > button {
   background: linear-gradient(
     135deg,
-    #d4af37,
-    #b8922e
+    var(--qc-gold),
+    var(--qc-gold-hover)
   );
-  color: white;
-  border-radius: 14px;
+  color: #FFFFFF;
+  border-radius: 12px;
+  padding: 0.55rem 1.1rem;
   border: none;
-  height: 48px;
-  font-weight: 700;
+  font-weight: 600;
+  box-shadow: 0 8px 20px var(--qc-gold-soft);
 }
 
 .stButton > button:hover {
-  opacity: 0.92;
+  background: linear-gradient(
+    135deg,
+    var(--qc-gold-hover),
+    var(--qc-gold)
+  );
+  transform: translateY(-1px);
+}
+
+/* ---------- INPUTS ---------- */
+input, textarea, select {
+  border-radius: 10px !important;
+  border: 1px solid var(--qc-border) !important;
+}
+
+input:focus, textarea:focus, select:focus {
+  outline: none !important;
+  border-color: var(--qc-gold) !important;
+  box-shadow: 0 0 0 2px var(--qc-gold-soft);
+}
+
+/* ---------- TABS ---------- */
+.stTabs [role="tab"] {
+  padding: 10px 18px;
+  border-radius: 12px;
+  font-weight: 600;
+  color: var(--qc-text2);
+}
+
+.stTabs [role="tab"][aria-selected="true"] {
+  background: var(--qc-gold-soft);
+  color: var(--qc-text);
+}
+
+/* ---------- CARDS ---------- */
+.qc-card {
+  background: var(--qc-card-strong);
+  border-radius: 16px;
+  padding: 18px 20px;
+  box-shadow: 0 12px 26px var(--qc-shadow);
+  border: 1px solid var(--qc-border);
+}
+
+/* ---------- METRICS ---------- */
+[data-testid="stMetric"] {
+  background: var(--qc-panel);
+  border-radius: 14px;
+  padding: 14px 16px;
+  box-shadow: 0 10px 22px var(--qc-shadow);
+  border: 1px solid var(--qc-border);
+}
+
+/* ---------- TABLE ---------- */
+.stDataFrame {
+  border-radius: 14px;
+  overflow: hidden;
+  box-shadow: 0 10px 22px var(--qc-shadow);
+}
+
+/* ---------- SIDEBAR ---------- */
+section[data-testid="stSidebar"] {
+  background: linear-gradient(
+    180deg,
+    #111827,
+    #0B1220
+  );
+}
+
+section[data-testid="stSidebar"] * {
+  color: #E5E7EB;
+}
+
+/* ---------- CHECKBOX / RADIO ---------- */
+input[type="radio"],
+input[type="checkbox"] {
+  accent-color: var(--qc-gold);
+}
+
+/* ---------- FOOTER / MISC ---------- */
+hr {
+  border: none;
+  height: 1px;
+  background: linear-gradient(
+    to right,
+    transparent,
+    var(--qc-border),
+    transparent
+  );
 }
