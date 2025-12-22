@@ -3,23 +3,34 @@ import pandas as pd
 
 import qc_core as qc
 
-# --- Base config / theme ---
+
+# --- Global config/theme ---
 qc.apply_page_config()
 qc.inject_global_css()
 
-# --- Hero banner (always show) ---
+# --- Hero banner always visible ---
 qc.render_global_header()
 
-# --- Login gate (shows login card under hero, stops app until logged in) ---
+# --- Login gate (hides sidebar content when logged out) ---
 qc.require_login()
 
-# --- After login: show logout button + full sidebar ---
-qc.render_logout_sidebar()
+# --- Logged-in top row: user + logout (Cách A: nằm ở nội dung chính, không để sidebar) ---
+user = qc.get_current_user()
+lab_id = qc.get_current_lab_id()
 
+top_l, top_r = st.columns([3, 1])
+with top_l:
+    st.caption(f"**User:** `{user}`  •  **PXN:** `{lab_id}`")
+with top_r:
+    if st.button("🚪 Đăng xuất", use_container_width=True):
+        qc.auth_logout()
+        st.rerun()
+
+# --- Sidebar (chỉ hiện sau khi login) ---
 cfg = qc.render_sidebar()
 
 sigma_cat, active_rules = qc.get_sigma_category_and_rules(
-    cfg["sigma_value"], cfg["num_levels"]
+    cfg.get("sigma_value", 0), cfg.get("num_levels", 1)
 )
 
 qc.render_top_info_cards(cfg, sigma_cat, active_rules)
@@ -64,7 +75,7 @@ with col1:
     if isinstance(daily_df, pd.DataFrame) and not daily_df.empty:
         total_rows = len(daily_df)
         filled_rows = (
-            daily_df[[c for c in daily_df.columns if c.startswith("Ctrl")]]
+            daily_df[[c for c in daily_df.columns if str(c).startswith("Ctrl")]]
             .dropna(how="all")
             .shape[0]
         )
