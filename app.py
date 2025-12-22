@@ -3,25 +3,19 @@ import pandas as pd
 
 import qc_core as qc
 
-# =============================
-# App entry
-# =============================
+# --- Base config / theme ---
 qc.apply_page_config()
 qc.inject_global_css()
 
-# Hero banner (giữ đúng style cũ)
+# --- Hero banner (always show) ---
 qc.render_global_header()
 
-# --- Login gate ---
-if not qc.is_logged_in():
-    # Sidebar vẫn giữ tone màu nhưng ẩn toàn bộ nội dung khi chưa login
-    qc.inject_sidebar_shell_only_css()
-    qc.render_login_section()
-    st.stop()
+# --- Login gate (shows login card under hero, stops app until logged in) ---
+qc.require_login()
 
-# =============================
-# Logged-in area
-# =============================
+# --- After login: show logout button + full sidebar ---
+qc.render_logout_sidebar()
+
 cfg = qc.render_sidebar()
 
 sigma_cat, active_rules = qc.get_sigma_category_and_rules(
@@ -31,6 +25,7 @@ sigma_cat, active_rules = qc.get_sigma_category_and_rules(
 qc.render_top_info_cards(cfg, sigma_cat, active_rules)
 
 st.markdown("### ⚡ Quick actions")
+
 qa_col1, qa_col2, qa_col3, qa_col4 = st.columns(4)
 with qa_col1:
     st.page_link(
