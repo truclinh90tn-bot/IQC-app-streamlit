@@ -1,180 +1,187 @@
 /* =========================================================
-   IQC APP – GLOBAL THEME (Luxury / Gold / Clean)
+   IQC APP â€“ GLOBAL THEME (Premium / Gold / Clean)
+   - Fix: khĂ´i phá»¥c hero banner Ä‘Ăºng tone beâ€“gold nhÆ° báº£n gá»‘c
+   - Fix: sidebar dark navy sang, cĂ³ tuá»³ chá»n áº©n chá»¯/nav khi chÆ°a login
    ========================================================= */
 
-/* ---------- ROOT VARIABLES ---------- */
 :root {
-  --qc-bg: #F7F9FC;
-  --qc-panel: #FFFFFF;
-  --qc-panel-dark: #F2F4F8;
+  --qc-bg: #fbfbfd;
+  --qc-panel: #ffffff;
 
-  --qc-gold: #B88A2B;
-  --qc-gold-hover: #A97A1F;
+  --qc-gold: #b88a2b;
+  --qc-gold-hover: #a97a1f;
   --qc-gold-soft: rgba(184, 138, 43, 0.18);
 
-  --qc-text: #1F2937;
-  --qc-text2: #6B7280;
+  --qc-text: #1f2937;
+  --qc-muted: #6b7280;
 
-  --qc-border: rgba(185, 150, 60, 0.35);
-  --qc-card-strong: #FFFFFF;
+  --qc-shadow: 0 18px 45px rgba(15, 23, 42, 0.12);
+  --qc-shadow-strong: 0 24px 70px rgba(15, 23, 42, 0.18);
 
-  --qc-shadow: rgba(15, 23, 42, 0.14);
-  --qc-shadow-strong: rgba(15, 23, 42, 0.20);
-
-  --qc-error: #A94442;
-  --qc-warning: #C28F2C;
+  --qc-sidebar-1: #0b1020;
+  --qc-sidebar-2: #0f1a36;
+  --qc-sidebar-border: rgba(255, 255, 255, 0.09);
 }
 
-/* ---------- BASE ---------- */
-html, body, [class*="stApp"] {
-  background-color: var(--qc-bg);
+/* ---------- APP BACKGROUND ---------- */
+html, body, [data-testid="stAppViewContainer"] {
+  background: radial-gradient(1200px 600px at 12% 12%, rgba(184, 138, 43, 0.08), transparent 60%),
+              var(--qc-bg);
   color: var(--qc-text);
-  font-family: "Inter", "Segoe UI", sans-serif;
 }
 
-/* ---------- HERO HEADER ---------- */
+/* ---------- HIDE STREAMLIT DEFAULT HEADER FOOTER ---------- */
+header[data-testid="stHeader"],
+footer {
+  visibility: hidden;
+  height: 0;
+}
+
+/* ---------- SIDEBAR (giá»¯ tone mĂ u ká»ƒ cáº£ khi chÆ°a login) ---------- */
+section[data-testid="stSidebar"] {
+  background: radial-gradient(900px 520px at 0% 0%, rgba(184, 138, 43, 0.10), transparent 55%),
+              linear-gradient(180deg, var(--qc-sidebar-2) 0%, var(--qc-sidebar-1) 100%) !important;
+  border-right: 1px solid var(--qc-sidebar-border) !important;
+}
+
+section[data-testid="stSidebar"] * {
+  color: #e5e7eb;
+}
+
+/* NĂºt collapse "<<" */
+section[data-testid="stSidebar"] button[kind="header"] {
+  color: #e5e7eb !important;
+}
+
+/* Nav item */
+div[data-testid="stSidebarNav"] a,
+div[data-testid="stSidebarNav"] button {
+  border-radius: 12px !important;
+}
+
+div[data-testid="stSidebarNav"] a:hover,
+div[data-testid="stSidebarNav"] button:hover {
+  background: rgba(255, 255, 255, 0.06) !important;
+}
+
+div[data-testid="stSidebarNav"] a[aria-current="page"],
+div[data-testid="stSidebarNav"] a[aria-selected="true"],
+div[data-testid="stSidebarNav"] button[aria-current="page"],
+div[data-testid="stSidebarNav"] button[aria-selected="true"] {
+  background: rgba(184, 138, 43, 0.18) !important;
+  box-shadow: 0 0 0 1px rgba(184, 138, 43, 0.35) inset !important;
+}
+
+/* ---------- OPTIONAL: áº¨N chá»¯/nav sidebar khi CHÆ¯A login ----------
+   CĂ¡ch dĂ¹ng:
+   - Khi chÆ°a login, qc_core/app inject thĂªm <style> gá»i cĂ¡c class nĂ y
+   - Hoáº·c Ä‘á»ƒ máº·c Ä‘á»‹nh: hide nav (an toĂ n), vĂ  sau login inject CSS báº­t láº¡i
+*/
+
+/* áº¨n toĂ n bá»™ navigation (khĂ´ng cĂ²n chá»¯) */
+.qc-hide-sidebar-nav section[data-testid="stSidebar"] div[data-testid="stSidebarNav"] {
+  display: none !important;
+}
+
+/* áº¨n chá»¯ nhÆ°ng giá»¯ khá»‘i nav (náº¿u chá»‹ muá»‘n chá»‰ cĂ²n icon/collapse) */
+.qc-hide-sidebar-text section[data-testid="stSidebar"] div[data-testid="stSidebarNav"] * {
+  color: transparent !important;
+}
+
+/* ---------- MAIN CONTENT CONTAINER ---------- */
+[data-testid="stMainBlockContainer"] {
+  max-width: 1220px;
+  padding-top: 1.2rem;
+  padding-bottom: 3rem;
+}
+
+/* ---------- HERO BANNER (khĂ´i phá»¥c tone beâ€“gold) ---------- */
 .qc-hero {
-  background: linear-gradient(
-      120deg,
-      rgba(184,138,43,0.25),
-      rgba(184,138,43,0.05)
-    ),
-    #0F172A;
-  border-radius: 22px;
-  padding: 28px 36px;
-  margin-bottom: 22px;
-  box-shadow: 0 18px 40px var(--qc-shadow-strong);
+  background: radial-gradient(700px 420px at 18% 10%, rgba(184, 138, 43, 0.14), transparent 60%),
+              linear-gradient(90deg, #f6f0e6 0%, #fbf7f0 55%, #f2ece2 100%);
+  border: 2px solid rgba(184, 138, 43, 0.55);
+  border-radius: 26px;
+  box-shadow: var(--qc-shadow);
+  padding: 22px 26px;
 }
 
-.qc-hero h1,
-.qc-hero h2,
-.qc-hero h3 {
-  color: #FFFFFF;
+.qc-hero .qc-hero-chip {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 14px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.65);
+  border: 1px solid rgba(184, 138, 43, 0.30);
+  color: #4b5563;
+  font-weight: 600;
+}
+
+.qc-hero h1, .qc-hero h2 {
+  color: #2b2b2b;
+  letter-spacing: 0.3px;
 }
 
 .qc-hero p {
-  color: rgba(255,255,255,0.8);
+  color: #4b5563;
 }
 
-/* ---------- LOGIN CARD ---------- */
-.login-card {
-  max-width: 420px;
-  margin: 28px auto;
-  padding: 26px 28px;
+.qc-hero .qc-hero-media {
   border-radius: 18px;
-  background: rgba(255,255,255,0.92);
-  box-shadow: 0 20px 40px var(--qc-shadow);
-  border: 1px solid var(--qc-border);
-  backdrop-filter: blur(6px);
+  overflow: hidden;
+  border: 1px solid rgba(184, 138, 43, 0.35);
+  box-shadow: 0 14px 36px rgba(15, 23, 42, 0.16);
 }
 
-.login-card h3 {
-  text-align: center;
-  margin-bottom: 18px;
-  color: var(--qc-text);
+/* ---------- CARDS / PANELS ---------- */
+.qc-card {
+  background: rgba(255, 255, 255, 0.96);
+  border: 1px solid rgba(184, 138, 43, 0.22);
+  border-radius: 18px;
+  box-shadow: 0 12px 34px rgba(15, 23, 42, 0.10);
 }
 
 /* ---------- BUTTONS ---------- */
 .stButton > button {
-  background: linear-gradient(
-    135deg,
-    var(--qc-gold),
-    var(--qc-gold-hover)
-  );
-  color: #FFFFFF;
-  border-radius: 12px;
-  padding: 0.55rem 1.1rem;
-  border: none;
-  font-weight: 600;
-  box-shadow: 0 8px 20px var(--qc-gold-soft);
+  border-radius: 14px !important;
+  font-weight: 700 !important;
+  border: 1px solid rgba(184, 138, 43, 0.35) !important;
 }
 
-.stButton > button:hover {
-  background: linear-gradient(
-    135deg,
-    var(--qc-gold-hover),
-    var(--qc-gold)
-  );
-  transform: translateY(-1px);
+.stButton > button:focus {
+  box-shadow: 0 0 0 3px rgba(184, 138, 43, 0.22) !important;
+}
+
+.stButton > button[data-testid="baseButton-primary"],
+.stButton > button[kind="primary"] {
+  background: linear-gradient(180deg, var(--qc-gold) 0%, var(--qc-gold-hover) 100%) !important;
+  color: #fff !important;
+}
+
+.stButton > button[data-testid="baseButton-secondary"],
+.stButton > button[kind="secondary"] {
+  background: rgba(255, 255, 255, 0.95) !important;
+  color: #111827 !important;
 }
 
 /* ---------- INPUTS ---------- */
-input, textarea, select {
-  border-radius: 10px !important;
-  border: 1px solid var(--qc-border) !important;
+.stTextInput input,
+.stNumberInput input,
+.stSelectbox div,
+.stDateInput input {
+  border-radius: 14px !important;
+  border: 1px solid rgba(184, 138, 43, 0.25) !important;
 }
 
-input:focus, textarea:focus, select:focus {
-  outline: none !important;
-  border-color: var(--qc-gold) !important;
-  box-shadow: 0 0 0 2px var(--qc-gold-soft);
+/* ---------- LOGIN AREA WIDTH (Ä‘á»ƒ 3 Ă´ nháº­p gá»n) ---------- */
+.qc-login-wrap {
+  max-width: 420px;
+  margin: 0 auto;
 }
 
-/* ---------- TABS ---------- */
-.stTabs [role="tab"] {
-  padding: 10px 18px;
-  border-radius: 12px;
-  font-weight: 600;
-  color: var(--qc-text2);
-}
-
-.stTabs [role="tab"][aria-selected="true"] {
-  background: var(--qc-gold-soft);
-  color: var(--qc-text);
-}
-
-/* ---------- CARDS ---------- */
-.qc-card {
-  background: var(--qc-card-strong);
+/* ---------- TABLES ---------- */
+[data-testid="stDataFrame"] {
   border-radius: 16px;
-  padding: 18px 20px;
-  box-shadow: 0 12px 26px var(--qc-shadow);
-  border: 1px solid var(--qc-border);
-}
-
-/* ---------- METRICS ---------- */
-[data-testid="stMetric"] {
-  background: var(--qc-panel);
-  border-radius: 14px;
-  padding: 14px 16px;
-  box-shadow: 0 10px 22px var(--qc-shadow);
-  border: 1px solid var(--qc-border);
-}
-
-/* ---------- TABLE ---------- */
-.stDataFrame {
-  border-radius: 14px;
   overflow: hidden;
-  box-shadow: 0 10px 22px var(--qc-shadow);
-}
-
-/* ---------- SIDEBAR ---------- */
-section[data-testid="stSidebar"] {
-  background: linear-gradient(
-    180deg,
-    #111827,
-    #0B1220
-  );
-}
-
-section[data-testid="stSidebar"] * {
-  color: #E5E7EB;
-}
-
-/* ---------- CHECKBOX / RADIO ---------- */
-input[type="radio"],
-input[type="checkbox"] {
-  accent-color: var(--qc-gold);
-}
-
-/* ---------- FOOTER / MISC ---------- */
-hr {
-  border: none;
-  height: 1px;
-  background: linear-gradient(
-    to right,
-    transparent,
-    var(--qc-border),
-    transparent
-  );
+  border: 1px solid rgba(15, 23, 42, 0.12);
 }
