@@ -1,17 +1,113 @@
 import streamlit as st
+import pandas as pd
 import qc_core as qc
 
+# =========================
+# Page config + CSS
+# =========================
 qc.apply_page_config()
 qc.inject_global_css()
 
-# LOGIN CHECK
-qc.require_login()
+# =========================
+# LANDING PAGE
+# Hero + Login (khi chưa đăng nhập)
+# =========================
+if not qc.is_logged_in():
+    qc.render_global_header()   # Hero banner
+    qc.render_login_section()   # Login card nằm dưới hero
+    st.stop()
 
-# SIDEBAR + LOGOUT
+# =========================
+# SAU KHI ĐÃ ĐĂNG NHẬP
+# =========================
+qc.render_global_header()
+qc.render_logout_button(where="sidebar")  # Nút Đăng xuất + badge user
 cfg = qc.render_sidebar()
 
-# HERO (vẫn giữ sau login)
-qc.render_hero()
+# =========================
+# QUICK ACTIONS
+# =========================
+st.markdown("### ⚡ Quick actions")
 
+qa_col1, qa_col2, qa_col3, qa_col4 = st.columns(4)
+with qa_col1:
+    st.page_link(
+        "pages/1_Thiet_lap_chi_so_thong_ke.py",
+        label="Thiết lập chỉ số",
+        icon="🧮",
+    )
+with qa_col2:
+    st.page_link(
+        "pages/2_Ghi_nhan_va_danh_gia.py",
+        label="Ghi nhận & đánh giá",
+        icon="✏️",
+    )
+with qa_col3:
+    st.page_link(
+        "pages/3_Bieu_do_Levey_Jennings.py",
+        label="Biểu đồ LJ",
+        icon="📊",
+    )
+with qa_col4:
+    st.page_link(
+        "pages/4_Huong_dan_va_About.py",
+        label="Hướng dẫn",
+        icon="📘",
+    )
+
+# =========================
+# DASHBOARD TỔNG QUAN
+# =========================
 st.markdown("### 📊 Dashboard nội kiểm – Tổng quan")
-st.info("Nội dung dashboard sẽ hiển thị tại đây.")
+
+col1, col2 = st.columns([2, 3])
+
+cur_state = qc.get_current_analyte_state()
+
+with col1:
+    st.markdown("#### 📈 Tiến độ nhập dữ liệu IQC")
+    daily_df = cur_state.get("daily_df")
+    if isinstance(daily_df, pd.DataFrame) and not daily_df.empty:
+        total_rows = len(daily_df)
+        filled_rows = (
+            daily_df[[c for c in daily_df.columns if c.startswith("Ctrl")]]
+            .dropna(how="all")
+            .shape[0]
+        )
+        st.metric("Số dòng đã nhập", f"{filled_rows}/{total_rows}")
+    else:
+        st.info(
+            "Chưa có dữ liệu nội kiểm cho xét nghiệm này. "
+            "Vào trang **2_Ghi_nhan_va_danh_gia** để nhập."
+        )
+
+    st.markdown("#### 🧮 Tóm tắt chỉ số thống kê")
+    stats_df = cur_state.get("qc_stats")
+    if isinstance(stats_df, pd.DataFrame) and not stats_df.empty:
+        st.dataframe(stats_df, use_container_width=True, height=230)
+    else:
+        st.caption(
+            "Chưa thiết lập chỉ số thống kê cho xét nghiệm này. "
+            "Vào trang **1_Ghi_nhan_va_danh_gia**."
+        )
+
+with col2:
+    st.markdown("#### 🧷 Tình trạng QC gần đây")
+    summary_df = cur_state.get("summary_df")
+    if isinstance(summary_df, pd.DataFrame) and not summary_df.empty:
+        st.dataframe(summary_df.tail(10), use_container_width=True, height=260)
+    else:
+        st.caption(
+            "Chưa có đánh giá Westgard cho xét nghiệm này. "
+            "Vào trang **2_Ghi_nhan_va_danh_gia** để tính."
+        )
+
+    st.markdown("#### 🧭 Gợi ý thao tác tiếp theo")
+    st.markdown(
+        """
+        - Nếu **chưa có Mean, SD, CV%** → vào trang **1 – Thiết lập chỉ số thống kê**.  
+        - Nếu đã có Mean & SD → vào trang **2 – Ghi nhận & đánh giá** để nhập IQC hằng ngày.  
+        - Muốn xem biểu đồ trực quan → trang **3 – Biểu đồ Levey–Jennings**.  
+        - Xem hướng dẫn chi tiết → trang **4 – Hướng dẫn & About**.
+        """
+    )
