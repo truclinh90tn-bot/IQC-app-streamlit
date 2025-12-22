@@ -3,44 +3,34 @@ import pandas as pd
 
 import qc_core as qc
 
-# =========================
-# APP BOOTSTRAP
-# =========================
+# =============================
+# App entry
+# =============================
 qc.apply_page_config()
 qc.inject_global_css()
 
-# Hero banner luôn hiển thị
+# Hero banner (giữ đúng style cũ)
 qc.render_global_header()
 
-# =========================
-# LOGIN GATE (hiển thị ngay dưới hero)
-# =========================
+# --- Login gate ---
 if not qc.is_logged_in():
-    qc.render_login_section(
-        title="🔐 Đăng nhập IQC",
-        subtitle="Nhập tài khoản PXN được cấp để truy cập dữ liệu riêng theo PXN.",
-    )
+    # Sidebar vẫn giữ tone màu nhưng ẩn toàn bộ nội dung khi chưa login
+    qc.inject_sidebar_shell_only_css()
+    qc.render_login_section()
     st.stop()
 
-# Sidebar: hiển thị user + nút Đăng xuất
-qc.render_topbar_user_logout()
-
-# =========================
-# CONFIG / SIDEBAR
-# =========================
+# =============================
+# Logged-in area
+# =============================
 cfg = qc.render_sidebar()
 
 sigma_cat, active_rules = qc.get_sigma_category_and_rules(
     cfg["sigma_value"], cfg["num_levels"]
 )
 
-# =========================
-# MAIN UI
-# =========================
 qc.render_top_info_cards(cfg, sigma_cat, active_rules)
 
 st.markdown("### ⚡ Quick actions")
-
 qa_col1, qa_col2, qa_col3, qa_col4 = st.columns(4)
 with qa_col1:
     st.page_link(
@@ -78,8 +68,11 @@ with col1:
     daily_df = cur_state.get("daily_df")
     if isinstance(daily_df, pd.DataFrame) and not daily_df.empty:
         total_rows = len(daily_df)
-        ctrl_cols = [c for c in daily_df.columns if str(c).startswith("Ctrl")]
-        filled_rows = daily_df[ctrl_cols].dropna(how="all").shape[0] if ctrl_cols else 0
+        filled_rows = (
+            daily_df[[c for c in daily_df.columns if c.startswith("Ctrl")]]
+            .dropna(how="all")
+            .shape[0]
+        )
         st.metric("Số dòng đã nhập", f"{filled_rows}/{total_rows}")
     else:
         st.info(
