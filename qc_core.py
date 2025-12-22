@@ -196,6 +196,207 @@ def _img_to_base64(path: str) -> str:
 # - Streamlit theme (config.toml) chỉ hỗ trợ một phần; CSS bên dưới sẽ "diệt sạch" màu lạc tông.
 # =====================================================
 
+
+# =========================
+# Auth + Supabase (PXN login)
+# =========================
+import bcrypt
+
+def _get_secret(path_keys, default=None):
+    """Read nested secret keys safely."""
+    try:
+        cur = st.secrets
+        for k in path_keys:
+            if isinstance(cur, dict) and k in cur:
+                cur = cur[k]
+            else:
+                return default
+        return cur
+    except Exception:
+        return default
+
+
+def auth_is_configured() -> bool:
+    url = _get_secret(["supabase", "url"]) or _get_secret(["supabase_url"]) or _get_secret(["SUPABASE_URL"])
+    key = (
+        _get_secret(["supabase", "service_key"])
+        or _get_secret(["supabase", "anon_key"])
+        or _get_secret(["supabase_service_key"])
+        or _get_secret(["supabase_anon_key"])
+        or _get_secret(["SUPABASE_SERVICE_KEY"])
+        or _get_secret(["SUPABASE_ANON_KEY"])
+    )
+    return bool(url and key)
+
+
+@st.cache_resource(show_spinner=False)
+def get_supabase_client():
+    """Create (cached) Supabase client from Streamlit secrets."""
+    if not auth_is_configured():
+        return None
+
+    url = _get_secret(["supabase", "url"]) or _get_secret(["supabase_url"]) or _get_secret(["SUPABASE_URL"])
+    key = (
+        _get_secret(["supabase", "service_key"])
+        or _get_secret(["supabase", "anon_key"])
+        or _get_secret(["supabase_service_key"])
+        or _get_secret(["supabase_anon_key"])
+        or _get_secret(["SUPABASE_SERVICE_KEY"])
+        or _get_secret(["SUPABASE_ANON_KEY"])
+    )
+
+    if create_client is None:
+        raise RuntimeError("Chưa cài supabase-py. Thêm 'supabase' vào requirements.txt.")
+    return create_client(url, key)
+
+
+def is_logged_in() -> bool:
+    return bool(st.session_state.get("auth_ok") is True)
+
+
+def get_current_user():
+    return st.session_state.get("auth_user")
+
+
+def get_current_lab_id():
+    return st.session_state.get("auth_lab_id")
+
+
+def auth_logout():
+    st.session_state["auth_ok"] = False
+    st.session_state["auth_user"] = None
+    st.session_state["auth_role"] = None
+    st.session_state["auth_lab_id"] = None
+
+
+def auth_login(username: str, password: str):
+    """
+    Login theo bảng accounts:
+      accounts(username, password_hash, role, lab_id)
+
+    password_hash là bcrypt hash (vd $2a$...).
+    """
+    sb = get_supabase_client()
+    if sb is None:
+        return False, "Chưa cấu hình Supabase secrets."
+
+    username = (username or "").strip()
+    password = (password or "")
+    if not username or not password:
+        return False, "Vui lòng nhập Username và Password."
+
+    try:
+        res = (
+            sb.table("accounts")
+            .select("username,password_hash,role,lab_id")
+            .eq("username", username)
+            .limit(1)
+            .execute()
+        )
+        rows = getattr(res, "data", None) or []
+        if not rows:
+            return False, "Sai Username hoặc Password."
+        row = rows[0]
+        pw_hash = (row.get("password_hash") or "").encode("utf-8")
+        if not pw_hash:
+            return False, "Tài khoản chưa có password_hash."
+
+        # bcrypt: checkpw expects bytes
+        ok = bcrypt.checkpw(password.encode("utf-8"), pw_hash)
+        if not ok:
+            return False, "Sai Username hoặc Password."
+
+        st.session_state["auth_ok"] = True
+        st.session_state["auth_user"] = row.get("username")
+        st.session_state["auth_role"] = row.get("role")
+        st.session_state["auth_lab_id"] = row.get("lab_id")
+        return True, None
+
+    except Exception as e:
+        return False, f"Lỗi đăng nhập: {e}"
+
+
+def hide_sidebar_when_logged_out():
+    """Giữ tone sidebar nhưng ẩn chữ/menu khi chưa đăng nhập."""
+    if is_logged_in():
+        return
+
+    st.markdown(
+        """
+        <style>
+        /* Ẩn menu pages trong sidebar (multi-page nav) */
+        section[data-testid="stSidebar"] [data-testid="stSidebarNav"] { display:none !important; }
+
+        /* Ẩn mọi nội dung widget trong sidebar */
+        section[data-testid="stSidebar"] .stTextInput,
+        section[data-testid="stSidebar"] .stSelectbox,
+        section[data-testid="stSidebar"] .stRadio,
+        section[data-testid="stSidebar"] .stMultiSelect,
+        section[data-testid="stSidebar"] .stButton,
+        section[data-testid="stSidebar"] .stMarkdown,
+        section[data-testid="stSidebar"] .stCaption,
+        section[data-testid="stSidebar"] .stAlert,
+        section[data-testid="stSidebar"] .stExpander
+        { display:none !important; }
+
+        /* Giữ chiều rộng sidebar để nhìn đúng tone */
+        section[data-testid="stSidebar"] { min-width: 320px; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_login_section():
+    """Card đăng nhập đặt dưới hero banner. Inputs gọn ~1/3 chiều ngang."""
+    st.markdown(
+        """
+        <style>
+.login-card{max-width:520px;margin:24px auto 6px auto;padding:18px 20px;border:1px solid rgba(180,140,60,.45);border-radius:18px;background:rgba(255,255,255,.78);box-shadow:0 12px 30px rgba(0,0,0,.10);}
+.login-card__title{font-weight:800;font-size:22px;color:#2b2b2b;margin-bottom:6px;}
+.login-card__desc{color:rgba(20,20,20,.75);font-size:15px;}
+</style>
+<div class="login-card">
+          <div class="login-card__title">🔐 Đăng nhập IQC</div>
+          <div class="login-card__desc">Nhập tài khoản PXN được cấp để truy cập dữ liệu riêng.</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    if not auth_is_configured():
+        st.warning(
+            "Chưa cấu hình Supabase để lưu dữ liệu theo PXN.\n\n"
+            "Chị vào **Streamlit → Settings → Secrets** và thêm:\n"
+            "- `supabase.url`\n"
+            "- `supabase.service_key` (hoặc `supabase.anon_key`)\n\n"
+            "Sau đó **Save** và **Rerun** lại app."
+        )
+        return
+
+    c1, c2, c3 = st.columns([1, 1.2, 1])
+    with c2:
+        with st.form("login_form", clear_on_submit=False):
+            u = st.text_input("Username", key="login_username")
+            p = st.text_input("Password", type="password", key="login_password")
+            submitted = st.form_submit_button("Đăng nhập", use_container_width=True)
+        if submitted:
+            ok, err = auth_login(u, p)
+            if ok:
+                st.success("Đăng nhập thành công.")
+                st.rerun()
+            else:
+                st.error(err or "Đăng nhập thất bại.")
+
+
+def require_login():
+    """Call ở đầu app.py để bắt buộc đăng nhập."""
+    if not is_logged_in():
+        hide_sidebar_when_logged_out()
+        render_login_section()
+        st.stop()
+
+
 def apply_page_config():
     st.set_page_config(
         page_title="Nội kiểm tra chất lượng xét nghiệm",
@@ -246,16 +447,33 @@ def get_theme() -> dict:
 
 
 def inject_global_css():
+    """Load global theme CSS.
+
+    ưu tiên:
+      1) ./assets/theme.css
+      2) ./theme.css  (root repo - chị đang dùng)
+    """
     import streamlit as st
     from pathlib import Path
 
-    css_path = Path(__file__).parent / "assets" / "theme.css"
-    if css_path.exists():
-        st.markdown(
-            f"<style>{css_path.read_text(encoding='utf-8')}</style>",
-            unsafe_allow_html=True,
-        )
+    base = Path(__file__).parent
+    candidates = [
+        base / "assets" / "theme.css",
+        base / "theme.css",
+        Path.cwd() / "assets" / "theme.css",
+        Path.cwd() / "theme.css",
+    ]
 
+    for css_path in candidates:
+        try:
+            if css_path.exists():
+                st.markdown(
+                    f"<style>{css_path.read_text(encoding='utf-8')}</style>",
+                    unsafe_allow_html=True,
+                )
+                return
+        except Exception:
+            continue
 
 
 def _init_multi_analyte_store():
@@ -1002,186 +1220,3 @@ def evaluate_westgard(z_df, num_levels, sigma):
     point_df = pd.DataFrame(point_rows)
 
     return sigma_cat, active_rules, summary_df, point_df
-
-# =========================
-# AUTH (username/password) + UI helpers (Login/Logout)
-# =========================
-import bcrypt
-from typing import Optional, Dict, Any
-
-def _secrets_get(*keys, default=None):
-    """Try multiple keys in st.secrets / env; supports both flat and nested supabase.* keys."""
-    import streamlit as st
-    # 1) nested: st.secrets["supabase"]["url"]
-    try:
-        cur = st.secrets
-        for k in keys:
-            if isinstance(cur, dict) and k in cur:
-                cur = cur[k]
-            else:
-                raise KeyError
-        if cur is not None:
-            return str(cur)
-    except Exception:
-        pass
-    # 2) flat: st.secrets["supabase.url"] or st.secrets["SUPABASE_URL"]
-    import os
-    for k in keys:
-        # flat in secrets
-        try:
-            v = st.secrets.get(k)
-            if v:
-                return str(v)
-        except Exception:
-            pass
-        # env
-        v = os.environ.get(k.upper().replace('.', '_'))
-        if v:
-            return str(v)
-    return default
-
-def supabase_get_url() -> Optional[str]:
-    return _secrets_get('supabase', 'url', 'supabase.url', 'SUPABASE_URL')
-
-def supabase_get_service_key() -> Optional[str]:
-    # allow either service role key or anon key (service key recommended for server-side)
-    return _secrets_get('supabase', 'service_key', 'supabase.service_key', 'SUPABASE_SERVICE_KEY',
-                        'supabase', 'anon_key', 'supabase.anon_key', 'SUPABASE_ANON_KEY')
-
-def auth_is_configured() -> bool:
-    return bool(supabase_get_url() and supabase_get_service_key())
-
-def _get_supabase_client():
-    """Create Supabase python client (cached in session_state)."""
-    import streamlit as st
-    if not auth_is_configured():
-        return None
-    if st.session_state.get('_sb_client') is None:
-        from supabase import create_client
-        st.session_state['_sb_client'] = create_client(supabase_get_url(), supabase_get_service_key())
-    return st.session_state.get('_sb_client')
-
-def is_logged_in() -> bool:
-    import streamlit as st
-    return isinstance(st.session_state.get('auth'), dict) and bool(st.session_state['auth'].get('username'))
-
-def get_current_user() -> Dict[str, Any]:
-    import streamlit as st
-    return st.session_state.get('auth') or {}
-
-def auth_logout():
-    import streamlit as st
-    st.session_state.pop('auth', None)
-    # do not delete sb client; keep for speed
-    st.rerun()
-
-def auth_login(username: str, password: str) -> Dict[str, Any]:
-    """Verify username/password against public.accounts (bcrypt hash)."""
-    sb = _get_supabase_client()
-    if sb is None:
-        raise RuntimeError("Supabase not configured")
-    username = (username or "").strip()
-    if not username:
-        raise ValueError("Thiếu username")
-
-    res = sb.table('accounts').select('username,password_hash,role,lab_id').eq('username', username).limit(1).execute()
-    data = getattr(res, 'data', None) or []
-    if not data:
-        raise ValueError("Sai username hoặc password")
-    row = data[0]
-    ph = (row.get('password_hash') or '').encode('utf-8')
-    ok = False
-    try:
-        ok = bcrypt.checkpw(password.encode('utf-8'), ph)
-    except Exception:
-        ok = False
-    if not ok:
-        raise ValueError("Sai username hoặc password")
-
-    return {
-        'username': row.get('username'),
-        'role': row.get('role') or 'pxn',
-        'lab_id': row.get('lab_id') or None,
-    }
-
-def hide_sidebar_when_logged_out():
-    """Keep sidebar background (theme) but hide all labels/controls when not logged in."""
-    import streamlit as st
-    if is_logged_in():
-        return
-    st.markdown(
-        """<style>
-        /* Hide sidebar nav & widgets text (logged out) */
-        section[data-testid="stSidebar"] .stMarkdown,
-        section[data-testid="stSidebar"] .stRadio,
-        section[data-testid="stSidebar"] .stSelectbox,
-        section[data-testid="stSidebar"] .stTextInput,
-        section[data-testid="stSidebar"] .stDateInput,
-        section[data-testid="stSidebar"] .stNumberInput,
-        section[data-testid="stSidebar"] .stSlider,
-        section[data-testid="stSidebar"] .stButton,
-        section[data-testid="stSidebar"] label,
-        section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] {
-            display: none !important;
-        }
-        </style>""", unsafe_allow_html=True
-    )
-
-def render_login_section():
-    """Render a centered login card under hero banner (width ~ 1/3)."""
-    import streamlit as st
-    # Ensure Supabase message is clear
-    if not auth_is_configured():
-        st.warning(
-            "Chưa cấu hình Supabase để lưu dữ liệu theo PXN.\n\n"
-            "Vào **Streamlit → Settings → Secrets** và thêm: \n"
-            "- `supabase.url`\n"
-            "- `supabase.service_key` (khuyến nghị) hoặc `supabase.anon_key`\n\n"
-            "Sau đó bấm **Save** và **Rerun** (hoặc **Clear cache**)." ,
-            icon="🔑"
-        )
-
-    # Card layout
-    left, mid, right = st.columns([1, 1.2, 1])
-    with mid:
-        st.markdown(
-            """<div class="login-card">
-                <div class="login-title">🔐 Đăng nhập IQC</div>
-                <div class="login-sub">Nhập tài khoản PXN được cấp để truy cập dữ liệu riêng.</div>
-            </div>""", unsafe_allow_html=True
-        )
-        with st.form("login_form", clear_on_submit=False):
-            u = st.text_input("Username", key="login_username")
-            p = st.text_input("Password", type="password", key="login_password")
-            submitted = st.form_submit_button("Đăng nhập", use_container_width=True)
-        if submitted:
-            try:
-                info = auth_login(u, p)
-                st.session_state['auth'] = info
-                st.success(f"Xin chào {info.get('username')} ({info.get('lab_id')})")
-                st.rerun()
-            except Exception as e:
-                st.error(str(e))
-
-def render_logout_sidebar():
-    """Show current user + logout button in sidebar after login."""
-    import streamlit as st
-    if not is_logged_in():
-        return
-    user = get_current_user()
-    with st.sidebar:
-        st.markdown("---")
-        st.caption(f"**User:** `{user.get('username')}`")
-        if user.get('lab_id'):
-            st.caption(f"**PXN:** `{user.get('lab_id')}`")
-        if st.button("🚪 Đăng xuất", use_container_width=True):
-            auth_logout()
-
-def require_login():
-    """Gatekeeper: render login UI and stop the app if not logged in."""
-    import streamlit as st
-    if is_logged_in():
-        return True
-    hide_sidebar_when_logged_out()
-    render_login_section()
-    st.stop()
