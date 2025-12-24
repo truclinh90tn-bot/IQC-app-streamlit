@@ -1,24 +1,21 @@
 import streamlit as st
-import os
 import pandas as pd
-
 import qc_core as qc
-
 
 qc.apply_page_config()
 qc.inject_global_css()
 
-# (NEW) Login + phân quyền + lưu dữ liệu theo PXN (Supabase)
-qc.require_login()
+# 1) Nếu chưa login -> render landing (hero + login) và STOP
+if not qc.is_logged_in():
+    qc.render_global_header()     # giữ hero banner
+    qc.render_login_section()     # card login nằm dưới hero
+    st.stop()
 
+# 2) Nếu đã login -> hiện app bình thường
+qc.render_global_header()
+qc.render_topbar_user_logout()    # nút đăng xuất (em làm ở bước 3)
 cfg = qc.render_sidebar()
 
-sigma_cat, active_rules = qc.get_sigma_category_and_rules(
-    cfg["sigma_value"], cfg["num_levels"]
-)
-
-qc.render_global_header()
-qc.render_top_info_cards(cfg, sigma_cat, active_rules)
 
 
 st.markdown("### ⚡ Quick actions")
