@@ -22,25 +22,37 @@ except Exception:  # pragma: no cover
 
 
 def supabase_is_configured() -> bool:
-    """True khi secrets có đủ SUPABASE_URL + SUPABASE_SERVICE_KEY/ANON_KEY."""
+    """True khi secrets có đủ supabase.url + (anon_key hoặc service_key) và đã cài supabase client."""
     try:
         sb = st.secrets.get("supabase", {})
         url = sb.get("url")
-        key = sb.get("service_key") or sb.get("anon_key")
-        return bool(url and key and create_client is not None)
+        anon = sb.get("anon_key")
+        svc = sb.get("service_key")
+        return bool(url and (anon or svc) and create_client is not None)
     except Exception:
         return False
 
 
 @st.cache_resource
-def _get_supabase_client():
+def _get_supabase_client(use_service: bool = False):
+    """
+    Tạo Supabase client.
+    - use_service=False: ưu tiên anon_key (an toàn cho Auth)
+    - use_service=True: ưu tiên service_key (cho thao tác DB/admin nếu cần)
+    """
     sb = st.secrets.get("supabase", {})
     url = sb.get("url")
-    key = sb.get("service_key") or sb.get("anon_key")
-    if not url or not key:
-        raise RuntimeError("Missing Supabase secrets: supabase.url and supabase.service_key/anon_key")
+    anon = sb.get("anon_key")
+    svc = sb.get("service_key")
+    if not url:
+        raise RuntimeError("Missing Supabase secret: supabase.url")
     if create_client is None:
         raise RuntimeError("Missing dependency: supabase (pip install supabase)")
+
+    key = (svc if use_service else anon) or (anon if use_service else svc)
+    if not key:
+        raise RuntimeError("Missing Supabase secret: supabase.anon_key or supabase.service_key")
+
     return create_client(url, key)
 
 
@@ -66,7 +78,7 @@ def db_load_state(lab_id: str, analyte_key: str) -> dict | None:
     if not supabase_is_configured():
         return None
     try:
-        client = _get_supabase_client()
+        client = _get_supabase_client(use_service=True)
         resp = (
             client.table("iqc_state")
             .select("state")
@@ -95,7 +107,7 @@ def db_save_state(lab_id: str, analyte_key: str, state: dict) -> bool:
     if not supabase_is_configured():
         return False
     try:
-        client = _get_supabase_client()
+        client = _get_supabase_client(use_service=True)
         payload = dict(state)
         # Serialize DataFrames
         for k in ["qc_stats", "daily_df", "summary_df", "chart_df"]:
@@ -111,7 +123,7 @@ def db_save_state(lab_id: str, analyte_key: str, state: dict) -> bool:
 
 
 def auth_logout():
-    # Xoá toàn bộ trạng thái đăng nhập trong session
+    """Xóa trạng thái đăng nhập trong session."""
     for k in [
         "auth_ok",
         "auth_user",
@@ -120,10 +132,11 @@ def auth_logout():
         "username",
         "role",
         "lab_id",
+        "current_user",
+        "login_username",
+        "login_password",
     ]:
-        if k in st.session_state:
-            del st.session_state[k]
-
+        st.session_state.pop(k, None)
 
 
 def is_logged_in() -> bool:
@@ -143,66 +156,94 @@ def get_current_user() -> dict:
         "auth_lab_id": st.session_state.get("auth_lab_id"),
     }
 
-
-def render_logout_button(where: str = "sidebar"):
-    """Nút đăng xuất. where='sidebar' hoặc 'main'"""
-    if not is_logged_in():
-        return
-    label = f"🚪 Đăng xuất ({st.session_state.get('username','')})"
-    if where == "main":
-        clicked = st.button(label, use_container_width=True)
-    else:
-        clicked = st.sidebar.button(label, use_container_width=True)
-    if clicked:
-        auth_logout()
-        _rerun()
-
-def require_login():
-    import streamlit as st
-    from supabase import create_client
-
-    sb = st.secrets["supabase"]
-    supabase = create_client(sb["url"], sb["anon_key"])
-
-    if st.session_state.get("auth_ok"):
+def require_login(title: str = "🔐 Đăng nhập IQC", subtitle: str | None = None):
+    """
+    Render & xử lý đăng nhập.
+    - Dùng Supabase Auth (email giả định: {username}@iqc.local).
+    - Sau khi login: set st.session_state['auth_ok','username','role','lab_id','current_user'].
+    """
+    if is_logged_in():
         return
 
-    st.title("🔐 Đăng nhập IQC")
+    if not supabase_is_configured():
+        st.error("Chưa cấu hình Supabase. Vào Streamlit → Settings → Secrets và thêm supabase.url + supabase.anon_key (hoặc supabase.service_key).")
+        st.stop()
 
-    username = st.text_input("Username")
-    password = st.text_input("Password", type="password")
+    client = _get_supabase_client()
 
-    if st.button("Đăng nhập"):
-        email = f"{username}@iqc.local"
+    # UI login (card dưới hero)
+    st.markdown(f"## {title}")
+    if subtitle:
+        st.caption(subtitle)
 
-        res = supabase.auth.sign_in_with_password({
-            "email": email,
-            "password": password
-        })
+    username = st.text_input("Username", key="login_username")
+    password = st.text_input("Password", type="password", key="login_password")
 
-        if res.user:
-            # lấy profile để biết lab_id
-            prof = (
-                supabase.table("profiles")
-                .select("username, role, lab_id")
-                .eq("user_id", res.user.id)
-                .single()
-                .execute()
-            )
+    if st.button("Đăng nhập", use_container_width=True):
+        u = (username or "").strip()
+        p = password or ""
+        if not u or not p:
+            st.warning("Vui lòng nhập đầy đủ Username và Password.")
+            st.stop()
+
+        email = f"{u}@iqc.local"
+        user = None
+        try:
+            res = client.auth.sign_in_with_password({"email": email, "password": p})
+            user = getattr(res, "user", None)
+        except Exception:
+            user = None
+
+        if user:
+            # lấy profile để biết lab_id / role
+            pdata = {}
+            try:
+                prof = (
+                    client.table("profiles")
+                    .select("username, role, lab_id")
+                    .eq("user_id", user.id)
+                    .single()
+                    .execute()
+                )
+                pdata = getattr(prof, "data", {}) or {}
+            except Exception:
+                pdata = {}
 
             st.session_state["auth_ok"] = True
-            st.session_state["username"] = prof.data["username"]
-            st.session_state["role"] = prof.data["role"]
-            st.session_state["lab_id"] = prof.data["lab_id"]
+            st.session_state["auth_user"] = u
+            st.session_state["auth_role"] = pdata.get("role") or "user"
+            st.session_state["auth_lab_id"] = pdata.get("lab_id") or ""
+            st.session_state["username"] = pdata.get("username") or u
+            st.session_state["role"] = st.session_state["auth_role"]
+            st.session_state["lab_id"] = st.session_state["auth_lab_id"]
+            st.session_state["current_user"] = get_current_user()
 
-            st.success(f"Đăng nhập PXN {st.session_state['lab_id']} thành công")
-            st.rerun()
+            st.success(f"Đăng nhập thành công: {st.session_state.get('username','')}")
+            _rerun()
         else:
-            st.error("Sai username hoặc password")
+            st.error("Sai username hoặc password.")
 
     st.stop()
 
 
+
+def render_login_section():
+    """Tương thích code cũ: login card nằm dưới hero."""
+    require_login(title="🔐 Đăng nhập IQC", subtitle="Nhập tài khoản để truy cập các chức năng của ứng dụng.")
+
+
+def render_topbar_user_logout():
+    """Thanh trên cùng (bên phải) hiển thị user + nút đăng xuất."""
+    if not is_logged_in():
+        return
+    user = get_current_user()
+    c1, c2 = st.columns([8, 2])
+    with c1:
+        st.caption(f"👤 {user.get('username','')} • {user.get('lab_id','')}")
+    with c2:
+        if st.button("🚪 Đăng xuất", use_container_width=True):
+            auth_logout()
+            _rerun()
 
 
 def _rerun():
@@ -287,16 +328,319 @@ def get_theme() -> dict:
 
 
 def inject_global_css():
-    import streamlit as st
-    from pathlib import Path
+    t = get_theme()
+    css = f"""
+    <style>
+      :root {{
+        --qc-bg: {t['bg']};
+        --qc-panel: {t['panel']};
+        --qc-panel-dark: {t.get('panelDark', t['panel'])};
+        --qc-gold: {t['gold']};
+        --qc-gold-hover: {t['goldHover']};
+        --qc-gold-soft: {t.get('goldSoft','rgba(184, 138, 43, 0.18)')};
+        --qc-text: {t['text']};
+        --qc-text2: {t['text2']};
+        --qc-border: {t.get('border','rgba(185, 150, 60, 0.35)')};
+        --qc-card-strong: {t.get('cardStrong','#FFFFFF')};
+        --qc-shadow: {t.get('shadow','rgba(15, 23, 42, 0.14)')};
+        --qc-shadow-strong: {t.get('shadowStrong','rgba(15, 23, 42, 0.20)')};
+        --qc-error: {t.get('error','#A94442')};
+        --qc-warning: {t.get('warning','#C28F2C')};
+      }}
 
-    css_path = Path(__file__).parent / "assets" / "theme.css"
-    if css_path.exists():
-        st.markdown(
-            f"<style>{css_path.read_text(encoding='utf-8')}</style>",
-            unsafe_allow_html=True,
-        )
+      /* Hide default multipage nav (we render custom menu) */
+      [data-testid="stSidebarNav"] {{ display: none; }}
 
+      /* Nền chính */
+      [data-testid="stAppViewContainer"] > .main {{
+        background: linear-gradient(180deg, #FFFFFF 0%, var(--qc-bg) 55%, #FFFFFF 120%) !important;
+      }}
+
+      /* Sidebar collapse/expand control: force stable "<<" (avoid Material Symbols text fallback) */
+      [data-testid="collapsedControl"] button,
+      [data-testid="stSidebarCollapseButton"] button {{
+        border-radius: 14px !important;
+        border: 1px solid rgba(184, 138, 43, 0.35) !important;
+        background: rgba(255,255,255,0.72) !important;
+        box-shadow: 0 10px 18px rgba(15,23,42,0.10);
+      }}
+      /* Hide anything inside the control (icon or its text fallback) */
+      [data-testid="collapsedControl"] button *,
+      [data-testid="stSidebarCollapseButton"] button * {{
+        visibility: hidden !important;
+      }}
+      /* Paint our own symbol; move it slightly down for better balance */
+      [data-testid="collapsedControl"] button,
+      [data-testid="stSidebarCollapseButton"] button {{
+        position: relative !important;
+      }}
+      [data-testid="collapsedControl"] button::after,
+      [data-testid="stSidebarCollapseButton"] button::after {{
+        content: "<<";
+        position: absolute;
+        left: 50%;
+        top: 52%;
+        transform: translate(-50%, -50%) translateY(2px);
+        font-weight: 900;
+        font-size: 18px;
+        color: var(--qc-gold);
+        letter-spacing: -0.08em;
+        line-height: 1;
+        pointer-events: none;
+      }}
+
+      /* Luxury spacing */
+      .block-container {{
+        padding-top: 1.1rem !important;
+        padding-bottom: 2.6rem !important;
+        padding-left: 2.0rem !important;
+        padding-right: 2.0rem !important;
+        max-width: 1280px !important;
+      }}
+
+      /* Top header bar */
+      [data-testid="stHeader"] {{ background: rgba(255,255,255,0) !important; }}
+      body {{ background: var(--qc-bg) !important; color: var(--qc-text) !important; }}
+
+      /* Typography (luxury dashboard) */
+      html, body, [data-testid="stAppViewContainer"] * {{
+        font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      }}
+      h1, h2, h3, h4, .qc-title-block h1 {{
+        font-family: Georgia, "Times New Roman", Times, serif;
+      }}
+
+      /* Sidebar (premium stronger contrast) */
+      [data-testid="stSidebar"] {{
+        background: linear-gradient(180deg, var(--qc-panel-dark) 0%, var(--qc-panel) 100%) !important;
+        border-right: 1px solid rgba(184, 138, 43, 0.40) !important;
+      }}
+      [data-testid="stSidebar"] * {{ color: var(--qc-text) !important; }}
+
+      /* Center sidebar logo */
+      [data-testid="stSidebar"] img {{
+        display:block;
+        margin-left:auto;
+        margin-right:auto;
+      }}
+
+      /* Custom nav links (page_link) */
+      .qc-nav a, .qc-nav a:visited {{ text-decoration:none !important; }}
+      .qc-nav [data-testid="stPageLink"] a {{
+        border-radius: 16px;
+        padding: 0.60rem 0.85rem;
+        display: block;
+        border: 1px solid rgba(184, 138, 43, 0.26);
+        background: rgba(255,255,255,0.62);
+        color: var(--qc-text) !important;
+        margin-bottom: 0.45rem;
+        box-shadow: 0 10px 18px rgba(15,23,42,0.08);
+        white-space: normal !important;
+        word-break: break-word !important;
+      }}
+      /* Ensure long Vietnamese labels wrap instead of truncating */
+      .qc-nav [data-testid="stPageLink"] a * {{
+        white-space: normal !important;
+        word-break: break-word !important;
+        overflow: visible !important;
+        text-overflow: clip !important;
+      }}
+      /* Streamlit sometimes applies ellipsis on specific text nodes */
+      .qc-nav [data-testid="stPageLink"] a p,
+      .qc-nav [data-testid="stPageLink"] a span {{
+        white-space: normal !important;
+        overflow: visible !important;
+        text-overflow: clip !important;
+      }}
+      .qc-nav [data-testid="stPageLink"] a:hover {{
+        border: 1px solid rgba(184, 138, 43, 0.62);
+        background: rgba(184, 138, 43, 0.14);
+        transform: translateY(-1px);
+      }}
+      /* Active page (make it clearly highlighted/premium) */
+      .qc-nav [data-testid="stPageLink"] a[aria-current="page"],
+      .qc-nav [data-testid="stPageLink"] a[aria-current="true"] {{
+        background: var(--qc-gold-soft) !important;
+        border: 1px solid rgba(184, 138, 43, 0.85) !important;
+        box-shadow: 0 14px 26px rgba(15,23,42,0.14);
+        font-weight: 800;
+      }}
+      .qc-nav [data-testid="stPageLink"] a[aria-current="page"] {{
+        background: var(--qc-gold) !important;
+        color: #ffffff !important;
+        border: 1px solid rgba(184, 138, 43, 0.78) !important;
+        box-shadow: 0 16px 28px rgba(15,23,42,0.16);
+      }}
+      .qc-nav [data-testid="stPageLink"] a[aria-current="page"] svg {{
+        fill: #ffffff !important;
+      }}
+
+      /* Header chính */
+      .qc-header {{
+        display:flex;
+        align-items:center;
+        gap: 1rem;
+        margin-top: 0.5rem;
+        margin-bottom: 1.2rem;
+        padding: 0.72rem 0.70rem 0.72rem 0.95rem; /* giảm padding phải để GIF sát lề hơn */
+        border-radius: 22px;
+        border: 1px solid rgba(184, 138, 43, 0.86);
+        position: relative;
+        overflow: hidden;
+        background:
+          radial-gradient(circle at 18% 10%, rgba(184,138,43,0.22), transparent 54%),
+          radial-gradient(circle at 82% 18%, rgba(210,170,99,0.28), transparent 58%),
+          linear-gradient(135deg, #ffffff 0%, var(--qc-bg) 65%, #ffffff 120%);
+        color: var(--qc-text);
+        box-shadow: 0 26px 54px var(--qc-shadow);
+      }}
+
+      /* Header layout: giữ text bên trái, GIF sát lề phải */
+      .qc-header-inner {{
+        width: 100%;
+        display: flex;
+        align-items: center;
+        gap: 16px;
+      }}
+      .qc-title-block {{ flex: 1 1 auto; }}
+      .qc-gif-wrap {{
+        flex: 0 0 auto;
+        margin-left: auto;
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        padding-right: 0 !important;
+      }}
+
+      /* Top strip to make banner look darker/premium */
+      .qc-header::before {{
+        content: "";
+        position: absolute;
+        left: 0;
+        right: 0;
+        top: 0;
+        height: 10px;
+        background: linear-gradient(90deg, var(--qc-panel-dark), var(--qc-gold));
+        opacity: 0.95;
+      }}
+
+      /* GIF in header: smaller and snug to banner height */
+      .qc-header-gif {{
+        height: 150px; /* smaller than before */
+        width: auto;
+        border-radius: 16px;
+        border: 1px solid rgba(184, 138, 43, 0.42);
+        box-shadow: 0 14px 26px rgba(15,23,42,0.14);
+        display:block;
+        margin-left: auto;
+        margin-right: -6px; /* sát lề phải hơn */
+      }}
+      .qc-title-block h1 {{
+        margin: 0;
+        font-size: 1.25rem;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--qc-text);
+      }}
+      .qc-title-block p {{ margin: 0.4rem 0 0; font-size: 0.9rem; opacity: 0.92; color: var(--qc-text2); }}
+      .qc-badge {{
+        display:inline-flex;
+        align-items:center;
+        gap:0.4rem;
+        padding:0.18rem 0.65rem;
+        font-size:0.72rem;
+        border-radius:999px;
+        background: rgba(184,138,43,0.16);
+        border: 1px solid rgba(184,138,43,0.62);
+        margin-bottom:0.5rem;
+        color: var(--qc-text);
+      }}
+
+      /* Cards */
+      .qc-card {{
+        background: var(--qc-card-strong);
+        border-radius: 22px;
+        padding: 1.05rem 1.15rem;
+        border: 1px solid rgba(184,138,43,0.22);
+        box-shadow: 0 28px 64px var(--qc-shadow-strong);
+      }}
+      .qc-card-title {{
+        font-size: 0.75rem;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: var(--qc-text2);
+        margin-bottom: 0.25rem;
+      }}
+      .qc-card-value {{ font-size: 1.1rem; font-weight: 700; color: var(--qc-text); }}
+      .qc-card-sub {{ margin-top:0.15rem; font-size:0.8rem; color: var(--qc-text2); }}
+
+      /* Rule chip */
+      .qc-rule-tag {{ display:flex; flex-wrap:wrap; gap:0.25rem; margin-top:0.3rem; }}
+      .qc-rule-chip {{
+        background: var(--qc-gold-soft);
+        color: var(--qc-text);
+        border-radius: 999px;
+        padding: 0.15rem 0.55rem;
+        font-size: 0.75rem;
+        border: 1px solid rgba(184,138,43,0.55);
+      }}
+
+      /* Buttons */
+      div.stButton > button {{
+        border-radius: 14px !important;
+        border: 1px solid rgba(184,138,43,0.85) !important;
+        background: var(--qc-gold) !important;
+        color: #ffffff !important;
+        font-weight: 700 !important;
+        letter-spacing: 0.02em;
+        box-shadow: 0 18px 34px rgba(15,23,42,0.14);
+      }}
+      div.stButton > button:hover {{
+        transform: translateY(-1px);
+        box-shadow: 0 26px 44px rgba(15,23,42,0.20);
+        border: 1px solid rgba(184,138,43,0.95) !important;
+        background: var(--qc-gold-hover) !important;
+      }}
+
+      /* Tabs */
+      button[data-baseweb="tab"] {{
+        border-radius: 999px !important;
+        border: 1px solid rgba(184,138,43,0.42) !important;
+        color: var(--qc-text) !important;
+        background: rgba(255,255,255,0.75) !important;
+      }}
+      button[data-baseweb="tab"][aria-selected="true"] {{
+        background: var(--qc-gold-soft) !important;
+        border-color: rgba(184,138,43,0.70) !important;
+      }}
+
+      /* Widget overrides */
+      div[data-baseweb="select"] > div,
+      div[data-baseweb="input"] > div,
+      div[data-baseweb="textarea"] > div {{
+        border-radius: 12px;
+        border-color: rgba(185,150,60,0.30) !important;
+        background: rgba(255,255,255,0.88);
+      }}
+      div[data-baseweb="select"] > div:focus-within,
+      div[data-baseweb="input"] > div:focus-within,
+      div[data-baseweb="textarea"] > div:focus-within {{
+        box-shadow: 0 0 0 3px rgba(201,162,77,0.22) !important;
+        border-color: rgba(185,150,60,0.55) !important;
+      }}
+
+      /* Radio/checkbox accent */
+      input[type="radio"], input[type="checkbox"] {{ accent-color: {t['gold']}; }}
+
+      /* Dataframe rounding */
+      [data-testid="stDataFrame"] {{
+        border-radius: 14px;
+        overflow: hidden;
+        border: 1px solid rgba(185,150,60,0.18);
+      }}
+    </style>
+    """
+    st.markdown(css, unsafe_allow_html=True)
 
 
 def _init_multi_analyte_store():
@@ -334,8 +678,8 @@ def _init_multi_analyte_store():
 
         # (NEW) Nếu đã đăng nhập + có Supabase secrets -> load state đã lưu
         try:
-            user = st.session_state.get("current_user")
-            if user and user.get("lab_id") and supabase_is_configured():
+            user = get_current_user()
+            if user.get("lab_id") and supabase_is_configured():
                 loaded = db_load_state(user["lab_id"], active)
                 if loaded:
                     store[active] = loaded
@@ -362,8 +706,8 @@ def update_current_analyte_state(**kwargs):
 
     # (NEW) autosave DB (nếu đã login)
     try:
-        user = st.session_state.get("current_user")
-        if user and user.get("lab_id") and supabase_is_configured():
+        user = get_current_user()
+        if user.get("lab_id") and supabase_is_configured():
             db_save_state(user["lab_id"], active, cur)
     except Exception:
         pass
