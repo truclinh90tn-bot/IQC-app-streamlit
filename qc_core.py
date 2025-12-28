@@ -1387,3 +1387,166 @@ def evaluate_westgard(z_df, num_levels, sigma):
     point_df = pd.DataFrame(point_rows)
 
     return sigma_cat, active_rules, summary_df, point_df
+
+# =========================
+# ADMIN / PHÂN QUYỀN / AUDIT
+# =========================
+
+def is_admin() -> bool:
+    # True nếu user hiện tại có role = 'admin'
+    return bool(is_logged_in() and (st.session_state.get("role") == "admin" or st.session_state.get("auth_role") == "admin"))
+
+
+def require_admin():
+    # Chặn truy cập nếu không phải admin
+    if not is_admin():
+        st.error("⛔ Chức năng này chỉ dành cho ADMIN.")
+        st.stop()
+
+
+def _service_client_or_stop():
+    """Lấy Supabase client bằng service_key để gọi admin API (tạo/reset user)."""
+    if not supabase_is_configured():
+        st.error("Chưa cấu hình Supabase (supabase.url + supabase.anon_key/service_key).")
+        st.stop()
+    if not st.secrets.get("supabase", {}).get("service_key"):
+        st.error("Thiếu supabase.service_key trong Secrets. Admin chức năng tạo/reset user cần SERVICE KEY.")
+        st.info('Vào Streamlit → Settings → Secrets và thêm: supabase.service_key = "..."')
+        st.stop()
+    return _get_supabase_client(use_service=True)
+
+
+def _username_to_email(username: str) -> str:
+    u = (username or "").strip().lower()
+    return f"{u}@iqc.local"
+
+
+def audit_log(action: str, target_username: str | None = None, target_role: str | None = None,
+              target_lab_id: str | None = None, details: dict | None = None):
+    """Ghi lịch sử thao tác admin vào bảng audit_log."""
+    try:
+        svc = _get_supabase_client(use_service=True) if st.secrets.get("supabase", {}).get("service_key") else _get_supabase_client()
+        actor = get_current_user() or {}
+        payload = {
+            "action": action,
+            "actor_username": actor.get("username") or actor.get("auth_user"),
+            "actor_role": actor.get("role") or actor.get("auth_role"),
+            "target_username": target_username,
+            "target_role": target_role,
+            "target_lab_id": target_lab_id,
+            "details": details or {},
+        }
+        svc.table("audit_log").insert(payload).execute()
+    except Exception:
+        pass
+
+
+def admin_list_accounts(limit: int = 200) -> list[dict]:
+    """Danh sách user (profiles)."""
+    svc = _service_client_or_stop()
+    try:
+        res = svc.table("profiles").select("username, role, lab_id, user_id").order("username").limit(limit).execute()
+        return getattr(res, "data", []) or []
+    except Exception:
+        return []
+
+
+def admin_create_account(username: str, password: str, role: str = "pxn", lab_id: str = "") -> dict:
+    """Tạo user mới (Supabase Auth + public.profiles)."""
+    svc = _service_client_or_stop()
+    u = (username or "").strip().lower()
+    if not u:
+        raise ValueError("Username rỗng.")
+    if not password:
+        raise ValueError("Password rỗng.")
+    email = _username_to_email(u)
+
+    created = svc.auth.admin.create_user(
+        {
+            "email": email,
+            "password": password,
+            "email_confirm": True,
+            "user_metadata": {"username": u},
+        }
+    )
+    user_id = getattr(getattr(created, "user", None), "id", None) or getattr(created, "id", None)
+
+    prof = {
+        "user_id": user_id,
+        "username": u,
+        "role": role,
+        "lab_id": lab_id or (u.upper() if u.startswith("pxn") else ""),
+    }
+    svc.table("profiles").upsert(prof, on_conflict="user_id").execute()
+
+    audit_log("CREATE_ACCOUNT", target_username=u, target_role=role, target_lab_id=prof.get("lab_id"), details={"email": email})
+    return prof
+
+
+def admin_reset_password(username: str, new_password: str):
+    """Reset password cho user."""
+    svc = _service_client_or_stop()
+    u = (username or "").strip().lower()
+    if not u:
+        raise ValueError("Username rỗng.")
+    if not new_password:
+        raise ValueError("Password rỗng.")
+    email = _username_to_email(u)
+
+    users = svc.auth.admin.list_users()
+    uid = None
+    for it in getattr(users, "users", []) or []:
+        if getattr(it, "email", "").lower() == email:
+            uid = getattr(it, "id", None)
+            break
+    if not uid:
+        raise ValueError("Không tìm thấy user trong Supabase Auth.")
+
+    svc.auth.admin.update_user_by_id(uid, {"password": new_password})
+    audit_log("RESET_PASSWORD", target_username=u, details={"email": email})
+
+
+def admin_update_profile(username: str, role: str | None = None, lab_id: str | None = None):
+    """Cập nhật role/lab_id (profiles)."""
+    svc = _service_client_or_stop()
+    u = (username or "").strip().lower()
+    if not u:
+        raise ValueError("Username rỗng.")
+    data = {}
+    if role is not None:
+        data["role"] = role
+    if lab_id is not None:
+        data["lab_id"] = lab_id
+    if not data:
+        return
+    svc.table("profiles").update(data).eq("username", u).execute()
+    audit_log("UPDATE_PROFILE", target_username=u, target_role=role, target_lab_id=lab_id, details=data)
+
+
+def admin_disable_account(username: str):
+    """Vô hiệu hoá user (ban)."""
+    svc = _service_client_or_stop()
+    u = (username or "").strip().lower()
+    email = _username_to_email(u)
+
+    users = svc.auth.admin.list_users()
+    uid = None
+    for it in getattr(users, "users", []) or []:
+        if getattr(it, "email", "").lower() == email:
+            uid = getattr(it, "id", None)
+            break
+    if not uid:
+        raise ValueError("Không tìm thấy user.")
+
+    svc.auth.admin.update_user_by_id(uid, {"ban_duration": "876000h"})  # ~100 năm
+    audit_log("DISABLE_ACCOUNT", target_username=u, details={"email": email})
+
+
+def admin_read_audit_log(limit: int = 200) -> list[dict]:
+    """Đọc lịch sử audit_log."""
+    svc = _service_client_or_stop()
+    try:
+        res = svc.table("audit_log").select("*").order("ts", desc=True).limit(limit).execute()
+        return getattr(res, "data", []) or []
+    except Exception:
+        return []
