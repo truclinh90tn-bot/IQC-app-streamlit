@@ -200,7 +200,7 @@ def require_login(title: str = "🔐 Đăng nhập IQC", subtitle: str | None = 
             try:
                 prof = (
                     client.table("profiles")
-                    .select("username, role, lab_id")
+                    .select("username, role, lab_id, active")
                     .eq("user_id", user.id)
                     .single()
                     .execute()
@@ -209,10 +209,23 @@ def require_login(title: str = "🔐 Đăng nhập IQC", subtitle: str | None = 
             except Exception:
                 pdata = {}
 
+            # active gate (if column exists)
+            if "active" in pdata and pdata.get("active") is False:
+                st.error("Tài khoản đã bị vô hiệu hoá. Liên hệ admin.")
+                st.stop()
+
+            _role = (pdata.get("role") or "pxn_user").strip()
+            _lab = pdata.get("lab_id") or ""
+
+            # IMPORTANT: superadmin is allowed to have lab_id = NULL/empty
+            if _role != "superadmin" and not _lab:
+                st.error("Tài khoản chưa có lab_id. Liên hệ admin.")
+                st.stop()
+
             st.session_state["auth_ok"] = True
             st.session_state["auth_user"] = u
-            st.session_state["auth_role"] = pdata.get("role") or "user"
-            st.session_state["auth_lab_id"] = pdata.get("lab_id") or ""
+            st.session_state["auth_role"] = _role
+            st.session_state["auth_lab_id"] = _lab
             st.session_state["username"] = pdata.get("username") or u
             st.session_state["role"] = st.session_state["auth_role"]
             st.session_state["lab_id"] = st.session_state["auth_lab_id"]
@@ -1394,13 +1407,13 @@ def evaluate_westgard(z_df, num_levels, sigma):
 
 def is_admin() -> bool:
     # True nếu user hiện tại có role = 'admin'
-    return bool(is_logged_in() and (st.session_state.get("role") == "admin" or st.session_state.get("auth_role") == "admin"))
+    return bool(is_logged_in() and (st.session_state.get("role") == "superadmin" or st.session_state.get("auth_role") == "superadmin"))
 
 
 def require_admin():
     # Chặn truy cập nếu không phải admin
     if not is_admin():
-        st.error("⛔ Chức năng này chỉ dành cho ADMIN.")
+        st.error("⛔ Chức năng này chỉ dành cho SUPER ADMIN.")
         st.stop()
 
 
@@ -1421,23 +1434,49 @@ def _username_to_email(username: str) -> str:
     return f"{u}@iqc.local"
 
 
-def audit_log(action: str, target_username: str | None = None, target_role: str | None = None,
-              target_lab_id: str | None = None, details: dict | None = None):
-    """Ghi lịch sử thao tác admin vào bảng audit_log."""
+def audit_log(
+    action: str,
+    target_username: str | None = None,
+    target_lab_id: str | None = None,
+    meta: dict | None = None,
+):
+    """
+    Ghi lịch sử thao tác admin vào bảng audit_log.
+
+    Hỗ trợ 2 schema phổ biến:
+    - Schema mới: (actor_username, action, target_username, target_lab_id, meta, created_at)
+    - Schema cũ:  (actor_username, action, target_username, target_lab_id, details, ts/created_at)
+
+    Hàm sẽ thử insert theo schema mới trước, nếu fail sẽ fallback.
+    """
     try:
         svc = _get_supabase_client(use_service=True) if st.secrets.get("supabase", {}).get("service_key") else _get_supabase_client()
         actor = get_current_user() or {}
-        payload = {
+        actor_username = actor.get("username") or actor.get("auth_user") or ""
+
+        payload_new = {
             "action": action,
-            "actor_username": actor.get("username") or actor.get("auth_user"),
-            "actor_role": actor.get("role") or actor.get("auth_role"),
+            "actor_username": actor_username,
             "target_username": target_username,
-            "target_role": target_role,
             "target_lab_id": target_lab_id,
-            "details": details or {},
+            "meta": meta or {},
         }
-        svc.table("audit_log").insert(payload).execute()
+        try:
+            svc.table("audit_log").insert(payload_new).execute()
+            return
+        except Exception:
+            pass
+
+        payload_old = {
+            "action": action,
+            "actor_username": actor_username,
+            "target_username": target_username,
+            "target_lab_id": target_lab_id,
+            "details": meta or {},
+        }
+        svc.table("audit_log").insert(payload_old).execute()
     except Exception:
+        # không làm app crash nếu audit lỗi
         pass
 
 
@@ -1451,7 +1490,7 @@ def admin_list_accounts(limit: int = 200) -> list[dict]:
         return []
 
 
-def admin_create_account(username: str, password: str, role: str = "pxn", lab_id: str = "") -> dict:
+def admin_create_account(username: str, password: str, role: str = "pxn_user", lab_id: str = "") -> dict:
     """Tạo user mới (Supabase Auth + public.profiles)."""
     svc = _service_client_or_stop()
     u = (username or "").strip().lower()
@@ -1471,6 +1510,13 @@ def admin_create_account(username: str, password: str, role: str = "pxn", lab_id
     )
     user_id = getattr(getattr(created, "user", None), "id", None) or getattr(created, "id", None)
 
+    # Ensure lab exists (optional)
+    if lab_id:
+        try:
+            svc.table("labs").upsert({"lab_id": lab_id}, on_conflict="lab_id").execute()
+        except Exception:
+            pass
+
     prof = {
         "user_id": user_id,
         "username": u,
@@ -1479,7 +1525,7 @@ def admin_create_account(username: str, password: str, role: str = "pxn", lab_id
     }
     svc.table("profiles").upsert(prof, on_conflict="user_id").execute()
 
-    audit_log("CREATE_ACCOUNT", target_username=u, target_role=role, target_lab_id=prof.get("lab_id"), details={"email": email})
+    audit_log("CREATE_USER", target_username=u, target_role=role, target_lab_id=prof.get("lab_id"), details={"email": email})
     return prof
 
 
@@ -1539,14 +1585,14 @@ def admin_disable_account(username: str):
         raise ValueError("Không tìm thấy user.")
 
     svc.auth.admin.update_user_by_id(uid, {"ban_duration": "876000h"})  # ~100 năm
-    audit_log("DISABLE_ACCOUNT", target_username=u, details={"email": email})
+    audit_log("DISABLE_USER", target_username=u, details={"email": email})
 
 
 def admin_read_audit_log(limit: int = 200) -> list[dict]:
     """Đọc lịch sử audit_log."""
     svc = _service_client_or_stop()
     try:
-        res = svc.table("audit_log").select("*").order("ts", desc=True).limit(limit).execute()
+        res = svc.table("audit_log").select("*").order("created_at", desc=True).limit(limit).execute()
         return getattr(res, "data", []) or []
     except Exception:
         return []
