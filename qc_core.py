@@ -22,37 +22,25 @@ except Exception:  # pragma: no cover
 
 
 def supabase_is_configured() -> bool:
-    """True khi secrets có đủ supabase.url + (anon_key hoặc service_key) và đã cài supabase client."""
+    """True khi secrets có đủ SUPABASE_URL + SUPABASE_SERVICE_KEY/ANON_KEY."""
     try:
         sb = st.secrets.get("supabase", {})
         url = sb.get("url")
-        anon = sb.get("anon_key")
-        svc = sb.get("service_key")
-        return bool(url and (anon or svc) and create_client is not None)
+        key = sb.get("service_key") or sb.get("anon_key")
+        return bool(url and key and create_client is not None)
     except Exception:
         return False
 
 
 @st.cache_resource
-def _get_supabase_client(use_service: bool = False):
-    """
-    Tạo Supabase client.
-    - use_service=False: ưu tiên anon_key (an toàn cho Auth)
-    - use_service=True: ưu tiên service_key (cho thao tác DB/admin nếu cần)
-    """
+def _get_supabase_client():
     sb = st.secrets.get("supabase", {})
     url = sb.get("url")
-    anon = sb.get("anon_key")
-    svc = sb.get("service_key")
-    if not url:
-        raise RuntimeError("Missing Supabase secret: supabase.url")
+    key = sb.get("service_key") or sb.get("anon_key")
+    if not url or not key:
+        raise RuntimeError("Missing Supabase secrets: supabase.url and supabase.service_key/anon_key")
     if create_client is None:
         raise RuntimeError("Missing dependency: supabase (pip install supabase)")
-
-    key = (svc if use_service else anon) or (anon if use_service else svc)
-    if not key:
-        raise RuntimeError("Missing Supabase secret: supabase.anon_key or supabase.service_key")
-
     return create_client(url, key)
 
 
@@ -78,7 +66,7 @@ def db_load_state(lab_id: str, analyte_key: str) -> dict | None:
     if not supabase_is_configured():
         return None
     try:
-        client = _get_supabase_client(use_service=True)
+        client = _get_supabase_client()
         resp = (
             client.table("iqc_state")
             .select("state")
@@ -107,7 +95,7 @@ def db_save_state(lab_id: str, analyte_key: str, state: dict) -> bool:
     if not supabase_is_configured():
         return False
     try:
-        client = _get_supabase_client(use_service=True)
+        client = _get_supabase_client()
         payload = dict(state)
         # Serialize DataFrames
         for k in ["qc_stats", "daily_df", "summary_df", "chart_df"]:
@@ -123,140 +111,20 @@ def db_save_state(lab_id: str, analyte_key: str, state: dict) -> bool:
 
 
 def auth_logout():
-    """Xóa trạng thái đăng nhập trong session."""
-    for k in [
-        "auth_ok",
-        "auth_user",
-        "auth_role",
-        "auth_lab_id",
-        "username",
-        "role",
-        "lab_id",
-        "current_user",
-        "login_username",
-        "login_password",
-    ]:
+    for k in ["auth_user", "auth_role", "auth_lab_id", "is_logged_in"]:
         st.session_state.pop(k, None)
+    _rerun()
 
 
-def is_logged_in() -> bool:
-    return bool(st.session_state.get("auth_ok"))
+def require_login():
+    """Login gate (Supabase Auth).
 
-
-def get_current_user() -> dict:
-    """Trả về thông tin user hiện tại (hoặc {} nếu chưa đăng nhập)."""
-    if not is_logged_in():
-        return {}
-    return {
-        "username": st.session_state.get("username"),
-        "role": st.session_state.get("role"),
-        "lab_id": st.session_state.get("lab_id"),
-        "auth_user": st.session_state.get("auth_user"),
-        "auth_role": st.session_state.get("auth_role"),
-        "auth_lab_id": st.session_state.get("auth_lab_id"),
-    }
-
-def require_login(title: str = "🔐 Đăng nhập IQC", subtitle: str | None = None):
+    Dự án đang dùng Supabase Auth + bảng public.profiles để lưu username/role/lab_id.
+    Hàm này chỉ gọi lại auth.require_login() để đồng bộ toàn app.
     """
-    Render & xử lý đăng nhập.
-    - Dùng Supabase Auth (email giả định: {username}@iqc.local).
-    - Sau khi login: set st.session_state['auth_ok','username','role','lab_id','current_user'].
-    """
-    if is_logged_in():
-        return
+    import auth
+    auth.require_login()
 
-    if not supabase_is_configured():
-        st.error("Chưa cấu hình Supabase. Vào Streamlit → Settings → Secrets và thêm supabase.url + supabase.anon_key (hoặc supabase.service_key).")
-        st.stop()
-
-    client = _get_supabase_client()
-
-    # UI login (card dưới hero)
-    st.markdown(f"## {title}")
-    if subtitle:
-        st.caption(subtitle)
-
-    username = st.text_input("Username", key="login_username")
-    password = st.text_input("Password", type="password", key="login_password")
-
-    if st.button("Đăng nhập", use_container_width=True):
-        u = (username or "").strip()
-        p = password or ""
-        if not u or not p:
-            st.warning("Vui lòng nhập đầy đủ Username và Password.")
-            st.stop()
-
-        email = f"{u}@iqc.local"
-        user = None
-        try:
-            res = client.auth.sign_in_with_password({"email": email, "password": p})
-            user = getattr(res, "user", None)
-        except Exception:
-            user = None
-
-        if user:
-            # lấy profile để biết lab_id / role
-            pdata = {}
-            try:
-                prof = (
-                    client.table("profiles")
-                    .select("username, role, lab_id, active")
-                    .eq("user_id", user.id)
-                    .single()
-                    .execute()
-                )
-                pdata = getattr(prof, "data", {}) or {}
-            except Exception:
-                pdata = {}
-
-            # active gate (if column exists)
-            if "active" in pdata and pdata.get("active") is False:
-                st.error("Tài khoản đã bị vô hiệu hoá. Liên hệ admin.")
-                st.stop()
-
-            _role = (pdata.get("role") or "pxn_user").strip()
-            _lab = pdata.get("lab_id") or ""
-
-            # IMPORTANT: superadmin is allowed to have lab_id = NULL/empty
-            if _role != "superadmin" and not _lab:
-                st.error("Tài khoản chưa có lab_id. Liên hệ admin.")
-                st.stop()
-
-            st.session_state["auth_ok"] = True
-            st.session_state["auth_user"] = u
-            st.session_state["auth_role"] = _role
-            st.session_state["auth_lab_id"] = _lab
-            st.session_state["username"] = pdata.get("username") or u
-            st.session_state["role"] = st.session_state["auth_role"]
-            st.session_state["lab_id"] = st.session_state["auth_lab_id"]
-            st.session_state["current_user"] = get_current_user()
-
-            st.success(f"Đăng nhập thành công: {st.session_state.get('username','')}")
-            _rerun()
-        else:
-            st.error("Sai username hoặc password.")
-
-    st.stop()
-
-
-
-def render_login_section():
-    """Tương thích code cũ: login card nằm dưới hero."""
-    require_login(title="🔐 Đăng nhập IQC", subtitle="Nhập tài khoản để truy cập các chức năng của ứng dụng.")
-
-
-def render_topbar_user_logout():
-    """Thanh trên cùng (bên phải) hiển thị user + nút đăng xuất."""
-    if not is_logged_in():
-        return
-    user = get_current_user()
-    c1, c2 = st.columns([8, 2])
-    with c1:
-        st.caption(f"👤 {user.get('username','')} • {user.get('lab_id','')}")
-    with c2:
-        if st.button("🚪 Đăng xuất", use_container_width=True):
-            auth_logout()
-            _rerun()
 
 
 def _rerun():
@@ -691,8 +559,8 @@ def _init_multi_analyte_store():
 
         # (NEW) Nếu đã đăng nhập + có Supabase secrets -> load state đã lưu
         try:
-            user = get_current_user()
-            if user.get("lab_id") and supabase_is_configured():
+            user = st.session_state.get("current_user")
+            if user and user.get("lab_id") and supabase_is_configured():
                 loaded = db_load_state(user["lab_id"], active)
                 if loaded:
                     store[active] = loaded
@@ -719,8 +587,8 @@ def update_current_analyte_state(**kwargs):
 
     # (NEW) autosave DB (nếu đã login)
     try:
-        user = get_current_user()
-        if user.get("lab_id") and supabase_is_configured():
+        user = st.session_state.get("current_user")
+        if user and user.get("lab_id") and supabase_is_configured():
             db_save_state(user["lab_id"], active, cur)
     except Exception:
         pass
@@ -1400,199 +1268,3 @@ def evaluate_westgard(z_df, num_levels, sigma):
     point_df = pd.DataFrame(point_rows)
 
     return sigma_cat, active_rules, summary_df, point_df
-
-# =========================
-# ADMIN / PHÂN QUYỀN / AUDIT
-# =========================
-
-def is_admin() -> bool:
-    # True nếu user hiện tại có role = 'admin'
-    return bool(is_logged_in() and (st.session_state.get("role") == "superadmin" or st.session_state.get("auth_role") == "superadmin"))
-
-
-def require_admin():
-    # Chặn truy cập nếu không phải admin
-    if not is_admin():
-        st.error("⛔ Chức năng này chỉ dành cho SUPER ADMIN.")
-        st.stop()
-
-
-def _service_client_or_stop():
-    """Lấy Supabase client bằng service_key để gọi admin API (tạo/reset user)."""
-    if not supabase_is_configured():
-        st.error("Chưa cấu hình Supabase (supabase.url + supabase.anon_key/service_key).")
-        st.stop()
-    if not st.secrets.get("supabase", {}).get("service_key"):
-        st.error("Thiếu supabase.service_key trong Secrets. Admin chức năng tạo/reset user cần SERVICE KEY.")
-        st.info('Vào Streamlit → Settings → Secrets và thêm: supabase.service_key = "..."')
-        st.stop()
-    return _get_supabase_client(use_service=True)
-
-
-def _username_to_email(username: str) -> str:
-    u = (username or "").strip().lower()
-    return f"{u}@iqc.local"
-
-
-def audit_log(
-    action: str,
-    target_username: str | None = None,
-    target_lab_id: str | None = None,
-    meta: dict | None = None,
-):
-    """
-    Ghi lịch sử thao tác admin vào bảng audit_log.
-
-    Hỗ trợ 2 schema phổ biến:
-    - Schema mới: (actor_username, action, target_username, target_lab_id, meta, created_at)
-    - Schema cũ:  (actor_username, action, target_username, target_lab_id, details, ts/created_at)
-
-    Hàm sẽ thử insert theo schema mới trước, nếu fail sẽ fallback.
-    """
-    try:
-        svc = _get_supabase_client(use_service=True) if st.secrets.get("supabase", {}).get("service_key") else _get_supabase_client()
-        actor = get_current_user() or {}
-        actor_username = actor.get("username") or actor.get("auth_user") or ""
-
-        payload_new = {
-            "action": action,
-            "actor_username": actor_username,
-            "target_username": target_username,
-            "target_lab_id": target_lab_id,
-            "meta": meta or {},
-        }
-        try:
-            svc.table("audit_log").insert(payload_new).execute()
-            return
-        except Exception:
-            pass
-
-        payload_old = {
-            "action": action,
-            "actor_username": actor_username,
-            "target_username": target_username,
-            "target_lab_id": target_lab_id,
-            "details": meta or {},
-        }
-        svc.table("audit_log").insert(payload_old).execute()
-    except Exception:
-        # không làm app crash nếu audit lỗi
-        pass
-
-
-def admin_list_accounts(limit: int = 200) -> list[dict]:
-    """Danh sách user (profiles)."""
-    svc = _service_client_or_stop()
-    try:
-        res = svc.table("profiles").select("username, role, lab_id, user_id").order("username").limit(limit).execute()
-        return getattr(res, "data", []) or []
-    except Exception:
-        return []
-
-
-def admin_create_account(username: str, password: str, role: str = "pxn_user", lab_id: str = "") -> dict:
-    """Tạo user mới (Supabase Auth + public.profiles)."""
-    svc = _service_client_or_stop()
-    u = (username or "").strip().lower()
-    if not u:
-        raise ValueError("Username rỗng.")
-    if not password:
-        raise ValueError("Password rỗng.")
-    email = _username_to_email(u)
-
-    created = svc.auth.admin.create_user(
-        {
-            "email": email,
-            "password": password,
-            "email_confirm": True,
-            "user_metadata": {"username": u},
-        }
-    )
-    user_id = getattr(getattr(created, "user", None), "id", None) or getattr(created, "id", None)
-
-    # Ensure lab exists (optional)
-    if lab_id:
-        try:
-            svc.table("labs").upsert({"lab_id": lab_id}, on_conflict="lab_id").execute()
-        except Exception:
-            pass
-
-    prof = {
-        "user_id": user_id,
-        "username": u,
-        "role": role,
-        "lab_id": lab_id or (u.upper() if u.startswith("pxn") else ""),
-    }
-    svc.table("profiles").upsert(prof, on_conflict="user_id").execute()
-
-    audit_log("CREATE_USER", target_username=u, target_role=role, target_lab_id=prof.get("lab_id"), details={"email": email})
-    return prof
-
-
-def admin_reset_password(username: str, new_password: str):
-    """Reset password cho user."""
-    svc = _service_client_or_stop()
-    u = (username or "").strip().lower()
-    if not u:
-        raise ValueError("Username rỗng.")
-    if not new_password:
-        raise ValueError("Password rỗng.")
-    email = _username_to_email(u)
-
-    users = svc.auth.admin.list_users()
-    uid = None
-    for it in getattr(users, "users", []) or []:
-        if getattr(it, "email", "").lower() == email:
-            uid = getattr(it, "id", None)
-            break
-    if not uid:
-        raise ValueError("Không tìm thấy user trong Supabase Auth.")
-
-    svc.auth.admin.update_user_by_id(uid, {"password": new_password})
-    audit_log("RESET_PASSWORD", target_username=u, details={"email": email})
-
-
-def admin_update_profile(username: str, role: str | None = None, lab_id: str | None = None):
-    """Cập nhật role/lab_id (profiles)."""
-    svc = _service_client_or_stop()
-    u = (username or "").strip().lower()
-    if not u:
-        raise ValueError("Username rỗng.")
-    data = {}
-    if role is not None:
-        data["role"] = role
-    if lab_id is not None:
-        data["lab_id"] = lab_id
-    if not data:
-        return
-    svc.table("profiles").update(data).eq("username", u).execute()
-    audit_log("UPDATE_PROFILE", target_username=u, target_role=role, target_lab_id=lab_id, details=data)
-
-
-def admin_disable_account(username: str):
-    """Vô hiệu hoá user (ban)."""
-    svc = _service_client_or_stop()
-    u = (username or "").strip().lower()
-    email = _username_to_email(u)
-
-    users = svc.auth.admin.list_users()
-    uid = None
-    for it in getattr(users, "users", []) or []:
-        if getattr(it, "email", "").lower() == email:
-            uid = getattr(it, "id", None)
-            break
-    if not uid:
-        raise ValueError("Không tìm thấy user.")
-
-    svc.auth.admin.update_user_by_id(uid, {"ban_duration": "876000h"})  # ~100 năm
-    audit_log("DISABLE_USER", target_username=u, details={"email": email})
-
-
-def admin_read_audit_log(limit: int = 200) -> list[dict]:
-    """Đọc lịch sử audit_log."""
-    svc = _service_client_or_stop()
-    try:
-        res = svc.table("audit_log").select("*").order("created_at", desc=True).limit(limit).execute()
-        return getattr(res, "data", []) or []
-    except Exception:
-        return []
