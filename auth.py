@@ -3,6 +3,11 @@ auth.py — Authentication (login/logout) for IQC Streamlit app.
 
 - Uses Supabase Auth (email/password) so that Postgres RLS policies apply.
 - UX: provides a professional login section (card) that can be placed under the hero banner.
+
+Login convention:
+- User enters username like: pxn001
+- App maps to internal email: pxn001@iqc.local
+- Role/lab_id/active are stored in public.profiles (not in auth.users metadata)
 """
 
 from __future__ import annotations
@@ -68,7 +73,7 @@ def _do_login(username: str, password: str) -> Tuple[bool, Dict[str, Any], str]:
     Perform login via Supabase Auth and fetch profile mapping.
     Returns (ok, user_dict, error_message).
     """
-    username = (username or "").strip()
+    username = (username or "").strip().lower()
     password = password or ""
     if not username or not password:
         return False, {}, "Vui lòng nhập đầy đủ username và password."
@@ -88,28 +93,37 @@ def _do_login(username: str, password: str) -> Tuple[bool, Dict[str, Any], str]:
     if not getattr(res, "user", None):
         return False, {}, "Sai username hoặc password."
 
+    # Fetch profile (role/lab_id/active)
     try:
         prof = (
             supabase.table("profiles")
-            .select("username, role, lab_id")
+            .select("username, role, lab_id, active")
             .eq("user_id", res.user.id)
             .single()
             .execute()
         )
         data = getattr(prof, "data", None) or {}
         if not data:
-            return False, {}, "Tài khoản chưa được gán PXN (profiles). Liên hệ admin."
+            return False, {}, "Tài khoản chưa được gán thông tin (profiles). Liên hệ admin."
     except Exception as e:
         return False, {}, f"Không đọc được profiles: {e}"
 
-    user_dict = {
-        "username": data.get("username") or username,
-        "role": data.get("role") or "pxn",
-        "lab_id": data.get("lab_id") or "",
-    }
-    if not user_dict["lab_id"]:
+    role = (data.get("role") or "pxn_user").strip()
+    lab_id = data.get("lab_id") or ""
+    active = data.get("active", True)
+
+    if not bool(active):
+        return False, {}, "Tài khoản đã bị vô hiệu hoá. Liên hệ admin."
+
+    # IMPORTANT: superadmin is allowed to have lab_id = NULL/empty
+    if role != "superadmin" and not lab_id:
         return False, {}, "Tài khoản chưa có lab_id. Liên hệ admin."
 
+    user_dict = {
+        "username": (data.get("username") or username).strip().lower(),
+        "role": role,
+        "lab_id": lab_id,
+    }
     return True, user_dict, ""
 
 
@@ -149,7 +163,10 @@ def render_login_section(
             st.session_state["role"] = user["role"]
             st.session_state["lab_id"] = user["lab_id"]
 
-            st.success(f"✅ Đăng nhập PXN {user['lab_id']} thành công")
+            if user["role"] == "superadmin":
+                st.success("✅ Đăng nhập ADMIN thành công")
+            else:
+                st.success(f"✅ Đăng nhập PXN {user['lab_id']} thành công")
             _rerun()
         else:
             st.error(err)
@@ -178,12 +195,16 @@ def render_logout_button(where: str = "sidebar") -> None:
     user = get_current_user()
     label = f"🚪 Đăng xuất ({user.get('username','')})" if user else "🚪 Đăng xuất"
 
+    badge_lab = user.get("lab_id", "")
+    if user and user.get("role") == "superadmin":
+        badge_lab = "ADMIN"
+
     if where == "sidebar":
         with st.sidebar:
             if user:
                 st.markdown(
                     f"<div class='user-badge'>👤 <b>{user.get('username','')}</b> "
-                    f"<span class='muted'>({user.get('lab_id','')})</span></div>",
+                    f"<span class='muted'>({badge_lab})</span></div>",
                     unsafe_allow_html=True,
                 )
             if st.button(label, use_container_width=True):
@@ -192,7 +213,7 @@ def render_logout_button(where: str = "sidebar") -> None:
         if user:
             st.markdown(
                 f"<div class='user-badge'>👤 <b>{user.get('username','')}</b> "
-                f"<span class='muted'>({user.get('lab_id','')})</span></div>",
+                f"<span class='muted'>({badge_lab})</span></div>",
                 unsafe_allow_html=True,
             )
         if st.button(label, use_container_width=True):
