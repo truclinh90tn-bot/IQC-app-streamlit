@@ -9,7 +9,7 @@ st.set_page_config(page_title="Admin • Quản lý tài khoản", layout="wide"
 qc.render_global_header()
 
 st.markdown("## 🔐 Admin • Quản lý tài khoản")
-st.caption("Tạo user PXN (pxn001/...) - reset mật khẩu - cập nhật role/lab_id - xem audit log.")
+st.caption("Tạo user PXN (pxn001/...) - reset mật khẩu - cập nhật lab_id/active - xem audit log.")
 
 # --- Tabs
 _tab1, _tab2, _tab3 = st.tabs(["➕ Cấp tài khoản", "🔁 Reset/Cập nhật", "🧾 Audit log"])
@@ -22,7 +22,8 @@ with _tab1:
     with col2:
         lab_id = st.text_input("Mã PXN (lab_id) (vd: PXN001)", value="PXN001")
     with col3:
-        role = st.selectbox("Role", ["pxn", "admin"], index=0)
+        st.markdown("**Role:** pxn_user")
+        role = "pxn_user"
 
     password = st.text_input("Password", type="password", help="Có thể nhập password theo ý chị.")
 
@@ -67,13 +68,7 @@ with _tab2:
                 st.error(str(e))
 
     with c2:
-        new_role = st.selectbox("Role mới", ["pxn", "admin"], index=0)
-        if st.button("💾 Cập nhật role", use_container_width=True):
-            try:
-                qc.admin_update_profile(sel, role=new_role)
-                st.success("Đã cập nhật role.")
-            except Exception as e:
-                st.error(str(e))
+        st.info("Role: hệ thống dùng 2 role: superadmin (chị) và pxn_user (PXN). Không cần đổi role ở đây.")
 
     with c3:
         new_lab = st.text_input("lab_id mới", value="")
